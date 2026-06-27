@@ -1,7 +1,6 @@
-//! Wattea — terminal batarya tüketim takipçisi.
+//! wattea — TUI batarya paneli.
 //!
-//! sysfs'ten her saniye örnekler, ratatui ile canlı bir panel çizer:
-//! doluluk Gauge'i, güç sparkline'ı, %/saat tüketim, sağlık, döngü.
+//! Canlı sysfs verisinden ratatui dashboard çizer.
 
 use std::time::Duration;
 
@@ -11,14 +10,9 @@ use futures::StreamExt;
 use ratatui::DefaultTerminal;
 use tokio::{select, time::interval};
 
-mod app;
-mod battery;
-#[cfg(test)]
-mod tests;
-mod ui;
-
-use app::{App, Message};
-use battery::Battery;
+use wattea::app::{App, Message};
+use wattea::battery::Battery;
+use wattea::ui;
 
 fn main() -> Result<()> {
     color_eyre::install()?;
@@ -33,15 +27,11 @@ fn main() -> Result<()> {
 
 /// Async ana döngü: her tick'te sysfs'i oku, klavye olaylarını dinle.
 fn run(terminal: &mut DefaultTerminal, battery: Battery) -> Result<()> {
-    // color_eyre + ratatui::init() panik'te terminal'i geri yükler;
-    // ek olarak panik hook'u ile restore'u garanti altına al.
     install_panic_hook();
 
     let mut app = App::new(&battery);
-    // İlk örnekleme hemen (UI'da boş ekran göstermemek için).
-    app.refresh(&battery);
+    app.refresh(&battery); // ilk örnekleme hemen
 
-    // tokio runtime: async event stream + tick interval aynı anda.
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;

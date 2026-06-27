@@ -1,6 +1,6 @@
 //! TestBackend ile UI render'ının kırılmadığını doğrular.
 
-use ratatui::{backend::TestBackend, Terminal};
+use ratatui::{Terminal, backend::TestBackend};
 
 use crate::app::App;
 use crate::battery::{Battery, BatteryInfo, BatterySample, Status};

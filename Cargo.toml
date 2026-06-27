@@ -5,9 +5,17 @@ edition = "2024"
 description = "Wattea — terminal battery consumption tracker"
 license = "MIT"
 
+[lib]
+name = "wattea"
+path = "src/lib.rs"
+
 [[bin]]
 name = "wattea"
-path = "src/main.rs"
+path = "src/bin/wattea.rs"
+
+[[bin]]
+name = "wattea-daemon"
+path = "src/bin/wattea-daemon.rs"
 
 [dependencies]
 ratatui = "0.30"
@@ -15,6 +23,9 @@ crossterm = { version = "0.29", features = ["event-stream"] }
 color-eyre = "0.6"
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
+rusqlite = { version = "0.37", features = ["bundled"] }
+dirs = "6"
+signal-hook = "0.3"
 
 [profile.release]
 lto = true

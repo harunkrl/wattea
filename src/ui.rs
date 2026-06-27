@@ -1,11 +1,13 @@
 //! Render — Gauge (doluluk), Sparkline (güç trendi), metrikler.
+//!
+//! Lib crate'in parçasıdır, böylece render testleri (TestBackend) çalışabilir.
 
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
     widgets::{Block, Borders, Gauge, Paragraph, Sparkline},
-    Frame,
 };
 
 use crate::app::App;
