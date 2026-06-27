@@ -40,7 +40,7 @@ pub fn view(app: &App, frame: &mut Frame) {
 /// Live sekmesi: gauge + metrics + sparkline + health.
 fn render_live(app: &App, frame: &mut Frame, area: Rect) {
     let [body, spark_area, health_area] = Layout::vertical([
-        Constraint::Length(9),
+        Constraint::Length(12),
         Constraint::Length(7),
         Constraint::Length(3),
     ])
@@ -468,6 +468,34 @@ fn render_metrics(app: &App, frame: &mut Frame, area: Rect) {
                 "Cycles",
                 opt_fmt(s.cycle_count.map(|c| c as f64), "", 0),
                 Color::Reset,
+            ));
+            // Sistem metrikleri (korelasyon için).
+            lines.push(metric_line(
+                "CPU load",
+                opt_fmt(app.sys.as_ref().and_then(|m| m.cpu_load), "%", 0),
+                Color::Reset,
+            ));
+            lines.push(metric_line(
+                "Brightness",
+                opt_fmt(app.sys.as_ref().and_then(|m| m.brightness), "%", 0),
+                Color::Reset,
+            ));
+            lines.push(metric_line(
+                "Temp",
+                opt_fmt(app.sys.as_ref().and_then(|m| m.temperature), "°C", 0),
+                Color::Reset,
+            ));
+            lines.push(metric_line(
+                "Anomalies",
+                match app.anomalies.len() {
+                    0 => "none".to_string(),
+                    n => format!("{n} spikes  (z≥2)"),
+                },
+                if app.anomalies.is_empty() {
+                    Color::DarkGray
+                } else {
+                    Color::Yellow
+                },
             ));
             lines.push(metric_line(
                 "Updated",

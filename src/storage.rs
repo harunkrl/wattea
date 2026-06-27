@@ -24,6 +24,9 @@ pub struct Sample {
     pub energy_full: f64,
     pub energy_full_design: f64,
     pub cycle_count: Option<u32>,
+    pub cpu_load: Option<f64>,
+    pub brightness: Option<f64>,
+    pub temperature: Option<f64>,
 }
 
 /// Desen analizi için bir sepet (hour 0–23 veya weekday 0–6).
@@ -78,13 +81,21 @@ impl Session {
     }
 }
 
-impl From<(&SystemTime, &BatterySample)> for Sample {
-    fn from((ts, s): (&SystemTime, &BatterySample)) -> Self {
+/// Beklenenden yüksek güç tüketen tek bir anomali örneği.
+#[derive(Debug, Clone)]
+pub struct Anomaly {
+    pub ts: i64,
+    pub power: f64,
+    pub z_score: f64,
+    pub mean: f64,
+    pub capacity: u8,
+}
+
+impl Sample {
+    /// Tam bir örnek oluştur (batarya + sistem metrikleri).
+    pub fn new(ts: i64, s: &BatterySample, sys: &crate::system::SystemMetrics) -> Self {
         Self {
-            ts: ts
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0),
+            ts,
             capacity: s.capacity,
             status: s.status,
             power_now: s.power_now,
@@ -93,6 +104,9 @@ impl From<(&SystemTime, &BatterySample)> for Sample {
             energy_full: s.energy_full,
             energy_full_design: s.energy_full_design,
             cycle_count: s.cycle_count,
+            cpu_load: sys.cpu_load,
+            brightness: sys.brightness,
+            temperature: sys.temperature,
         }
     }
 }
@@ -124,6 +138,7 @@ impl Store {
         conn.pragma_update(None, "busy_timeout", 5000)?;
 
         conn.execute_batch(SCHEMA)?;
+        migrate(&conn)?;
 
         Ok(Self { conn })
     }
@@ -133,6 +148,7 @@ impl Store {
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(SCHEMA)?;
+        migrate(&conn)?;
         Ok(Self { conn })
     }
 
@@ -150,6 +166,9 @@ impl Store {
                 sample.energy_full,
                 sample.energy_full_design,
                 sample.cycle_count,
+                sample.cpu_load,
+                sample.brightness,
+                sample.temperature,
             ],
         )?;
         Ok(())
@@ -184,6 +203,47 @@ impl Store {
         Ok(self
             .conn
             .query_row("SELECT COUNT(*) FROM samples", [], |r| r.get(0))?)
+    }
+
+    /// Beklenenden yüksek güç tüketen örnekleri (anomaliler) bul.
+    ///
+    /// Discharging örneklerinin güç dağılımında z-skoru `z_threshold`'den
+    /// büyük olanları döndürür (varsayılan 2.0 = ~üst %2.3). Sonuç en yeni
+    /// en üstte.
+    pub fn query_anomalies(&self, z_threshold: f64) -> Result<Vec<Anomaly>> {
+        let all = self.query_all()?;
+        // Sadece discharging + güç ölçümü olanlar.
+        let powers: Vec<(usize, f64)> = all
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| s.power_now.filter(|p| *p > 0.0).map(|p| (i, p)))
+            .collect();
+        if powers.len() < 2 {
+            return Ok(Vec::new());
+        }
+        let n = powers.len() as f64;
+        let mean = powers.iter().map(|(_, p)| p).sum::<f64>() / n;
+        let variance = powers.iter().map(|(_, p)| (p - mean).powi(2)).sum::<f64>() / n;
+        let std = variance.sqrt();
+        if std < 1e-9 {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        for (i, p) in powers {
+            let z = (p - mean) / std;
+            if z >= z_threshold {
+                let s = &all[i];
+                out.push(Anomaly {
+                    ts: s.ts,
+                    power: p,
+                    z_score: z,
+                    mean,
+                    capacity: s.capacity,
+                });
+            }
+        }
+        out.sort_by_key(|a| std::cmp::Reverse(a.ts));
+        Ok(out)
     }
 
     /// Saat-bazına ortalama %/saat tüketim deseni (0–23).
@@ -311,7 +371,10 @@ CREATE TABLE IF NOT EXISTS samples (
     energy_now         REAL,
     energy_full        REAL    NOT NULL,
     energy_full_design REAL    NOT NULL,
-    cycle_count        INTEGER
+    cycle_count        INTEGER,
+    cpu_load           REAL,
+    brightness         REAL,
+    temperature        REAL
 );
 CREATE INDEX IF NOT EXISTS idx_samples_ts ON samples(ts);
 -- Idempotent backfill: aynı ts tekrar insert edilirse sessizce yok sayılır.
@@ -321,13 +384,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_samples_ts ON samples(ts);
 const INSERT_SQL: &str = "
 INSERT OR IGNORE INTO samples
     (ts, capacity, status, power_now, voltage, energy_now,
-     energy_full, energy_full_design, cycle_count)
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+     energy_full, energy_full_design, cycle_count,
+     cpu_load, brightness, temperature)
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
 ";
 
 const SELECT_SINCE_SQL: &str = "
 SELECT ts, capacity, status, power_now, voltage, energy_now,
-       energy_full, energy_full_design, cycle_count
+       energy_full, energy_full_design, cycle_count,
+       cpu_load, brightness, temperature
 FROM samples
 WHERE ts >= ?1
 ORDER BY ts ASC
@@ -335,7 +400,8 @@ ORDER BY ts ASC
 
 const SELECT_LAST_SQL: &str = "
 SELECT ts, capacity, status, power_now, voltage, energy_now,
-       energy_full, energy_full_design, cycle_count
+       energy_full, energy_full_design, cycle_count,
+       cpu_load, brightness, temperature
 FROM (
     SELECT * FROM samples ORDER BY ts DESC LIMIT ?1
 )
@@ -344,7 +410,8 @@ ORDER BY ts ASC
 
 const SELECT_ALL_SQL: &str = "
 SELECT ts, capacity, status, power_now, voltage, energy_now,
-       energy_full, energy_full_design, cycle_count
+       energy_full, energy_full_design, cycle_count,
+       cpu_load, brightness, temperature
 FROM samples
 ORDER BY ts ASC
 ";
@@ -398,7 +465,32 @@ fn row_to_sample(row: &rusqlite::Row<'_>) -> rusqlite::Result<Sample> {
         energy_full: row.get(6)?,
         energy_full_design: row.get(7)?,
         cycle_count: row.get(8)?,
+        cpu_load: row.get(9)?,
+        brightness: row.get(10)?,
+        temperature: row.get(11)?,
     })
+}
+
+/// Eski DB'lerde eksik kolonları idempotent olarak ekle (cpu_load/brightness/temperature).
+///
+/// SCHEMA `IF NOT EXISTS` kullandığı için mevcut tablo yeniden oluşturulmaz;
+/// bu yüzden yeni kolonlar ALTER TABLE ile eklenir.
+fn migrate(conn: &Connection) -> Result<()> {
+    let cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(samples)")?
+        .query_map([], |r| r.get::<_, String>(1))?
+        .filter_map(|r| r.ok())
+        .collect();
+    for (col, ty) in [
+        ("cpu_load", "REAL"),
+        ("brightness", "REAL"),
+        ("temperature", "REAL"),
+    ] {
+        if !cols.iter().any(|c| c == col) {
+            conn.execute(&format!("ALTER TABLE samples ADD COLUMN {col} {ty}"), [])?;
+        }
+    }
+    Ok(())
 }
 
 fn parse_status(s: &str) -> Status {
@@ -427,6 +519,9 @@ mod tests {
             energy_full: 50.0,
             energy_full_design: 56.0,
             cycle_count: Some(100),
+            cpu_load: None,
+            brightness: None,
+            temperature: None,
         }
     }
 

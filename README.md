@@ -46,9 +46,15 @@ single static Rust binary, ~1.3 MB, minimal footprint.
   avg %/h, avg W per session
 - `wattea export [file]` — CSV dump of all samples (RFC 4180, UTC timestamps)
 
+**Phase 5 — System correlation & anomaly detection** ✅
+
+- **CPU load, screen brightness, temperature** collected alongside battery
+  (live metrics + CSV columns; explains *why* battery drains)
+- **Anomaly detection** — power spikes via z-score (≥2σ) highlighted live
+
 **Roadmap**
 
-- Phase 5 — CPU/brightness correlation, anomaly detection, health degradation trends
+- Health degradation trends (long-term, needs months of data)
 
 ## 📦 Install
 

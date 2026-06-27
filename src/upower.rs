@@ -77,6 +77,9 @@ pub fn import(
             energy_full,
             energy_full_design,
             cycle_count: None,
+            cpu_load: None,
+            brightness: None,
+            temperature: None,
         };
         store.insert(&sample)?;
         count += 1;

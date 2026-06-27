@@ -87,7 +87,7 @@ fn run_export(dest: Option<&str>) -> Result<()> {
 
 /// Basit, güvenli CSV üretimi (RFC 4180 alıntılama).
 fn to_csv(samples: &[wattea::storage::Sample]) -> String {
-    let header = "timestamp,datetime_utc,capacity_pct,status,power_w,voltage_v,energy_now_wh,energy_full_wh,cycle_count";
+    let header = "timestamp,datetime_utc,capacity_pct,status,power_w,voltage_v,energy_now_wh,energy_full_wh,cycle_count,cpu_load_pct,brightness_pct,temperature_c";
     let mut out = String::from(header);
     out.push('\n');
     for s in samples {
@@ -96,7 +96,7 @@ fn to_csv(samples: &[wattea::storage::Sample]) -> String {
         let voltage = s.voltage.map(|v| format!("{v:.4}")).unwrap_or_default();
         let energy_now = s.energy_now.map(|v| format!("{v:.4}")).unwrap_or_default();
         let row = format!(
-            "{},{},{},{},{},{},{},{:.4},{}\n",
+            "{},{},{},{},{},{},{},{:.4},{},{:.2},{:.2},{:.2}\n",
             s.ts,
             csv_field(&dt),
             s.capacity,
@@ -106,6 +106,9 @@ fn to_csv(samples: &[wattea::storage::Sample]) -> String {
             energy_now,
             s.energy_full,
             s.cycle_count.unwrap_or(0),
+            opt2(s.cpu_load),
+            opt2(s.brightness),
+            opt2(s.temperature),
         );
         out.push_str(&row);
     }
@@ -119,6 +122,11 @@ fn csv_field(s: &str) -> String {
     } else {
         s.to_string()
     }
+}
+
+/// Option<f64> → CSV alanı (None ise boş).
+fn opt2(v: Option<f64>) -> String {
+    v.map(|x| format!("{x:.2}")).unwrap_or_default()
 }
 
 /// Unix epoch → "YYYY-MM-DD HH:MM:SS" (UTC).

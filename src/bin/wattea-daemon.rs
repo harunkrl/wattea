@@ -32,15 +32,21 @@ fn main() -> Result<()> {
 
     let battery = Battery::detect()?;
     let store = Store::open(&db)?;
+    let mut sys = wattea::system::SystemReader::new();
 
     // İlk örnekleme hemen (servis bir an önce veri toplamaya başlasın).
-    collect_once(&battery, &store)?;
+    collect_once(&battery, &store, &mut sys)?;
 
-    run_loop(battery, store, Duration::from_secs(interval))
+    run_loop(battery, store, Duration::from_secs(interval), sys)
 }
 
 /// Örnek bir döngü: sinyal gelene dek her `interval`'de bir örnekler.
-fn run_loop(battery: Battery, store: Store, interval: Duration) -> Result<()> {
+fn run_loop(
+    battery: Battery,
+    store: Store,
+    interval: Duration,
+    mut sys: wattea::system::SystemReader,
+) -> Result<()> {
     let stop = install_signal_handlers();
 
     while !stop.load(Ordering::SeqCst) {
@@ -55,17 +61,26 @@ fn run_loop(battery: Battery, store: Store, interval: Duration) -> Result<()> {
         if stop.load(Ordering::SeqCst) {
             break;
         }
-        collect_once(&battery, &store)?;
+        collect_once(&battery, &store, &mut sys)?;
     }
 
     eprintln!("wattea-daemon: kapatılıyor");
     Ok(())
 }
 
-fn collect_once(battery: &Battery, store: &Store) -> Result<()> {
+fn collect_once(
+    battery: &Battery,
+    store: &Store,
+    sys: &mut wattea::system::SystemReader,
+) -> Result<()> {
     let sample = battery.read().context("batarya okuma")?;
+    let metrics = sys.read();
     let now = std::time::SystemTime::now();
-    let record = Sample::from((&now, &sample));
+    let ts = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let record = Sample::new(ts, &sample, &metrics);
     store.insert(&record)?;
     Ok(())
 }

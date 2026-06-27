@@ -4,7 +4,8 @@ use std::collections::VecDeque;
 use std::time::Instant;
 
 use crate::battery::{Battery, BatteryInfo, BatterySample};
-use crate::storage::{HourlyBin, Sample, Session, Store};
+use crate::storage::{Anomaly, HourlyBin, Sample, Session, Store};
+use crate::system::{SystemMetrics, SystemReader};
 
 /// Sparkline'da tutulan canlı örnek sayısı (≈ 5 dk @ 1 sn örnekleme).
 const HISTORY_LEN: usize = 300;
@@ -64,6 +65,9 @@ impl Tab {
 pub struct App {
     pub info: BatteryInfo,
     pub sample: Option<BatterySample>,
+    /// Canlı sistem metrikleri (CPU/parlaklık/sıcaklık).
+    pub sys: Option<SystemMetrics>,
+    sys_reader: SystemReader,
     /// Son N ölçümün gücü (W) — canlı sparkline için.
     pub power_history: VecDeque<f64>,
     /// SQLite history deposu (varsa). Trend sekmesi bunu kullanır.
@@ -75,6 +79,8 @@ pub struct App {
     pub pattern_axis: PatternAxis,
     /// On-battery oturumları (en yeni en üstte).
     pub sessions: Vec<Session>,
+    /// Beklenenden yüksek güç tüketen anomaliler (z≥2).
+    pub anomalies: Vec<Anomaly>,
     pub tab: Tab,
     pub last_update: Option<Instant>,
     pub last_error: Option<String>,
@@ -86,12 +92,15 @@ impl App {
         Self {
             info: battery.info.clone(),
             sample: None,
+            sys: None,
+            sys_reader: SystemReader::new(),
             power_history: VecDeque::with_capacity(HISTORY_LEN),
             store,
             trend: Vec::new(),
             pattern: Vec::new(),
             pattern_axis: PatternAxis::Hourly,
             sessions: Vec::new(),
+            anomalies: Vec::new(),
             tab: Tab::Live,
             last_update: None,
             last_error: None,
@@ -115,6 +124,8 @@ impl App {
             }
             Err(e) => self.last_error = Some(format!("{e:#}")),
         }
+        // Sistem metriklerini de oku (CPU delta için state'li reader).
+        self.sys = Some(self.sys_reader.read());
         // Trend verisini de tazele (SQLite'ten).
         self.refresh_trend();
         self.refresh_pattern();
@@ -151,6 +162,7 @@ impl App {
         self.refresh_trend();
         self.refresh_pattern();
         self.refresh_sessions();
+        self.refresh_anomalies();
     }
 
     /// Pattern eksenini değiştir (saatlik ↔ günlük).
@@ -166,6 +178,7 @@ impl App {
             self.refresh_trend();
             self.refresh_pattern();
             self.refresh_sessions();
+            self.refresh_anomalies();
         }
     }
 
@@ -176,6 +189,16 @@ impl App {
             match store.query_sessions(600) {
                 Ok(s) => self.sessions = s,
                 Err(e) => self.last_error = Some(format!("sessions: {e:#}")),
+            }
+        }
+    }
+
+    /// Anomali tespiti: z-skoru ≥ 2 olan güç spike'ları.
+    pub fn refresh_anomalies(&mut self) {
+        if let Some(store) = &self.store {
+            match store.query_anomalies(2.0) {
+                Ok(a) => self.anomalies = a,
+                Err(e) => self.last_error = Some(format!("anomalies: {e:#}")),
             }
         }
     }
