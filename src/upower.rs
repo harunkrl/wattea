@@ -167,6 +167,21 @@ fn parse_state(state: &str) -> Status {
 mod tests {
     use super::*;
 
+    /// Testler için geçici dizin oluştur (tempfile crate bağımlılığı olmadan).
+    fn tempdir_for(prefix: &str) -> std::path::PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "{prefix}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
     #[test]
     fn state_parsing_covers_upower_labels() {
         assert_eq!(parse_state("charging"), Status::Charging);
@@ -192,5 +207,39 @@ mod tests {
         // target geçmişte ise imleç geri dönmez (kronolojik varsayım).
         advance(&data, &mut c, 150);
         assert_eq!(data[c].0, 300);
+    }
+
+    #[test]
+    fn parse_dat_handles_realistic_upower_format() {
+        // Gerçek /var/lib/upower/history-*.dat biçimi: ts\tdeğer\tdurum.
+        let dir = tempdir_for("wattea_parse_dat");
+        let path = dir.join("history-charge-test.dat");
+        std::fs::write(
+            &path,
+            "1781939602\t79.000\tdischarging\n1781939700\t78.000\tdischarging\n1781939800\t0.000\tunknown\n",
+        )
+        .unwrap();
+        let rows = parse_dat(&path).unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].0, 1781939602);
+        assert!((rows[0].1 - 79.0).abs() < 1e-9);
+        assert_eq!(rows[0].2, "discharging");
+        // 0.000 + unknown da parse edilir (filtreleme import tarafında).
+        assert_eq!(rows[2].2, "unknown");
+    }
+
+    #[test]
+    fn parse_dat_skips_malformed_lines() {
+        let dir = tempdir_for("wattea_parse_bad");
+        let path = dir.join("bad.dat");
+        std::fs::write(
+            &path,
+            "100\t50.0\tdischarging\ngarbage line\n200\tnotanumber\tx\n\n",
+        )
+        .unwrap();
+        let rows = parse_dat(&path).unwrap();
+        // Yalnızca ilk geçerli satır kalır.
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, 100);
     }
 }

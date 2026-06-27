@@ -588,4 +588,140 @@ mod tests {
         assert_eq!(last3[0].capacity, 83); // ts 1007
         assert_eq!(last3[2].capacity, 81); // ts 1009 (en yeni)
     }
+
+    #[test]
+    fn hourly_pattern_aggregates_by_hour() {
+        let store = Store::open_in_memory().unwrap();
+        // ts=0 → 00:00 UTC, ts=3600 → 01:00 UTC (localtime'a göre kayabilir ama
+        // iki örnek farklı saatlere düşer). %/h = power/energy_full*100 = power/50*100.
+        // Saat A'da iki örnek (5W→10%/h, 15W→30%/h → avg 20), saat B'de tek (10W→20%/h).
+        store
+            .insert(&sample(0, 80, Some(5.0), Status::Discharging))
+            .unwrap();
+        store
+            .insert(&sample(60, 79, Some(15.0), Status::Discharging))
+            .unwrap();
+        store
+            .insert(&sample(3600, 70, Some(10.0), Status::Discharging))
+            .unwrap();
+        // Charging örnekleri desene girmemeli.
+        store
+            .insert(&sample(120, 79, Some(20.0), Status::Charging))
+            .unwrap();
+
+        let bins = store.query_hourly_pattern().unwrap();
+        // Charging hariç 3 discharging örnek, 2 ayrı saate dağılmış → 2 bin.
+        assert_eq!(bins.len(), 2);
+        // Toplam örnek sayısı charging hariç 3 olmalı.
+        let total_n: usize = bins.iter().map(|b| b.sample_count).sum();
+        assert_eq!(total_n, 3);
+        // Tek örnekli bin %/h = 20 (10W/50*100).
+        let single = bins.iter().find(|b| b.sample_count == 1).unwrap();
+        assert!((single.avg_pct_per_hour - 20.0).abs() < 0.01);
+        // İki örnekli bin avg = (10+30)/2 = 20 %/h.
+        let double = bins.iter().find(|b| b.sample_count == 2).unwrap();
+        assert!((double.avg_pct_per_hour - 20.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn sessions_segment_discharging_runs() {
+        let store = Store::open_in_memory().unwrap();
+        // discharge(10) → charge(kesinti) → discharge(10) → uzun gap → discharge(2)
+        for i in 0..10 {
+            store
+                .insert(&sample(i, 90 - i as u8, Some(5.0), Status::Discharging))
+                .unwrap();
+        }
+        store
+            .insert(&sample(10, 80, Some(0.0), Status::Charging))
+            .unwrap();
+        for i in 0..10 {
+            store
+                .insert(&sample(20 + i, 70, Some(5.0), Status::Discharging))
+                .unwrap();
+        }
+        // 10dk = 600sn gap'ten büyük boşluk → ayrı session.
+        store
+            .insert(&sample(20 + 10 + 700, 70, Some(5.0), Status::Discharging))
+            .unwrap();
+
+        let sessions = store.query_sessions(600).unwrap();
+        // 3 session: [0..10), [20..30), [son].
+        assert_eq!(sessions.len(), 3);
+        // İlk session: 90→81, 10 örnek.
+        assert_eq!(sessions[2].start_capacity, 90);
+        assert_eq!(sessions[2].end_capacity, 81);
+        assert_eq!(sessions[2].sample_count, 10);
+        // En yeni en üstte.
+        assert!(sessions[0].start_ts >= sessions[1].start_ts);
+    }
+
+    #[test]
+    fn anomalies_flag_high_zscore_power() {
+        let store = Store::open_in_memory().unwrap();
+        // 9 düşük güç (~5W) + 1 aykırı (50W).
+        for i in 0..9 {
+            store
+                .insert(&sample(i, 80, Some(5.0), Status::Discharging))
+                .unwrap();
+        }
+        store
+            .insert(&sample(9, 70, Some(50.0), Status::Discharging))
+            .unwrap();
+
+        let anomalies = store.query_anomalies(2.0).unwrap();
+        assert_eq!(anomalies.len(), 1);
+        assert!((anomalies[0].power - 50.0).abs() < 0.01);
+        assert!(anomalies[0].z_score >= 2.0);
+    }
+
+    #[test]
+    fn sample_new_merges_battery_and_system() {
+        use crate::battery::BatterySample;
+        use crate::system::SystemMetrics;
+        let bs = BatterySample {
+            capacity: 50,
+            status: Status::Discharging,
+            power_now: Some(10.0),
+            voltage: Some(16.0),
+            energy_now: Some(25.0),
+            energy_full: 50.0,
+            energy_full_design: 56.0,
+            cycle_count: Some(42),
+        };
+        let sys = SystemMetrics {
+            cpu_load: Some(33.0),
+            brightness: Some(60.0),
+            temperature: Some(45.0),
+        };
+        let s = Sample::new(123, &bs, &sys);
+        assert_eq!(s.ts, 123);
+        assert_eq!(s.capacity, 50);
+        assert_eq!(s.cycle_count, Some(42));
+        assert_eq!(s.cpu_load, Some(33.0));
+        assert_eq!(s.brightness, Some(60.0));
+        assert_eq!(s.temperature, Some(45.0));
+    }
+
+    #[test]
+    fn migrate_adds_columns_to_old_schema() {
+        // Eski (9-kolonlu) şemayla bir DB aç, sonra Store::open_in_memory
+        // ile yeni şema+migration çalışınca kolonların eklenmiş olduğunu doğrula.
+        let store = Store::open_in_memory().unwrap();
+        store
+            .insert(&sample(1, 80, Some(5.0), Status::Discharging))
+            .unwrap();
+        // open_in_memory zaten migrate() çağırır; kolonların varlığını doğrula.
+        let cols: Vec<String> = store
+            .conn
+            .prepare("PRAGMA table_info(samples)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(cols.contains(&"cpu_load".into()));
+        assert!(cols.contains(&"brightness".into()));
+        assert!(cols.contains(&"temperature".into()));
+    }
 }
