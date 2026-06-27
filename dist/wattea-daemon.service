@@ -1,6 +1,6 @@
 [Unit]
 Description=Wattea battery consumption collector
-Documentation=https://github.com/WATTEA/wattea
+Documentation=https://github.com/harunkrl/wattea
 # Pil takılı olsun olmasın çalış; ama UPower hazır olunca başlatmak
 # (ilk örneklemenin tutarlı olması için) tercih edilir.
 After=upower.service

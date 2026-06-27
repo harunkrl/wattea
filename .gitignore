@@ -16,3 +16,8 @@ db.sqlite*
 .vscode/
 .DS_Store
 *~
+
+# Local-only notes / research (not part of the project)
+ARASTIRMA_RAPORU.md
+*.rapor.md
+NOTES.md

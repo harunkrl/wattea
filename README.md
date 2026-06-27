@@ -21,11 +21,12 @@
 
 Wattea reads battery data straight from `/sys/class/power_supply/` (and UPower
 history) and renders a live, detail-rich terminal dashboard: charge level, draw
-rate in **%/hour**, voltage, health, cycles, a power sparkline, and — coming
-soon — per-hour-of-day usage patterns.
+rate in **%/hour**, voltage, health, cycles, a power sparkline, per-hour-of-day
+usage patterns, on-battery session analysis, and system correlation (CPU load,
+brightness, temperature).
 
 Built to be **lightweight** (a battery tool shouldn't drain your battery): a
-single static Rust binary, ~1.3 MB, minimal footprint.
+single static Rust binary, ~1.4 MB, minimal footprint.
 
 ## ✨ Features
 
@@ -36,6 +37,7 @@ single static Rust binary, ~1.3 MB, minimal footprint.
 - Voltage, estimated time to full/empty, cycle count
 - **Power sparkline** of the last 5 minutes
 - Battery **health** (actual vs. design capacity)
+- **CPU load, brightness, temperature** + anomaly count
 
 **Phase 2 — History & collection** ✅
 
@@ -68,10 +70,16 @@ single static Rust binary, ~1.3 MB, minimal footprint.
 ## 📦 Install
 
 ```bash
-git clone <repo-url> wattea
+git clone https://github.com/harunkrl/wattea.git wattea
 cd wattea
 cargo build --release
-# binary: ./target/release/wattea
+# binaries: ./target/release/wattea  and  ./target/release/wattea-daemon
+```
+
+Or build + install the daemon as a systemd user service in one step:
+
+```bash
+./dist/install.sh
 ```
 
 Arch users: an AUR package is planned.
@@ -119,11 +127,16 @@ Wattea is structured as a small library + two binaries:
 
 ```
 src/
-├── lib.rs            # shared core: battery, storage, model
+├── lib.rs            # shared core: data_dir/db_path + module roots
 ├── battery.rs        # sysfs reading → BatterySample
-├── storage.rs        # SQLite time-series store
+├── storage.rs        # SQLite time-series store (samples, sessions, patterns)
+├── system.rs         # CPU load / brightness / temperature reader
+├── upower.rs         # UPower `.dat` history backfill
+├── app.rs            # Elm-architecture state (Model/Message/Update)
+├── ui.rs             # Ratatui rendering (4 tabs)
+├── tests.rs          # unit + render tests
 ├── bin/
-│   ├── wattea.rs         # TUI dashboard
+│   ├── wattea.rs         # TUI dashboard + import/export
 │   └── wattea-daemon.rs  # background collector
 ```
 
