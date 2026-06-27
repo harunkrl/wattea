@@ -28,15 +28,20 @@ single static Rust binary, ~1.3 MB, minimal footprint.
 - **Power sparkline** of the last 5 minutes
 - Battery **health** (actual vs. design capacity)
 
-**Phase 2 — History & collection** 🚧
+**Phase 2 — History & collection** ✅
 
 - Background collector daemon → SQLite time-series (60s sampling)
 - `wattea import` - UPower `.dat` history backfill (idempotent)
 - 24h rate & capacity trend chart (Trend tab)
 
+**Phase 3 — Usage patterns** ✅
+
+- Per-**hour-of-day** average %/h bar chart (your usage rhythm)
+- Per-**day-of-week** comparison (toggle with `d`)
+- Color-coded by intensity, peak/trough highlighted
+
 **Roadmap**
 
-- Phase 3 — Per-hour-of-day usage patterns (the killer feature)
 - Phase 4 — Session & cycle analysis, health degradation trends
 - Phase 5 — CPU/brightness correlation, anomalies, CSV export
 

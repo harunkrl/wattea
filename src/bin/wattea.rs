@@ -82,12 +82,21 @@ fn run(terminal: &mut DefaultTerminal, battery: Battery, store: Option<Store>) -
                         let msg = match key.code {
                             KeyCode::Char('q') | KeyCode::Esc => Message::Quit,
                             KeyCode::Char('r') => Message::Refresh,
-                            KeyCode::Tab | KeyCode::Char('2') => Message::NextTab,
+                            KeyCode::Tab => Message::NextTab,
                             KeyCode::Char('1') => {
-                                // 1 → her zaman Live sekmesi.
-                                if app.tab != wattea::app::Tab::Live {
-                                    Message::NextTab
-                                } else { continue; }
+                                app.goto_tab(wattea::app::Tab::Live);
+                                continue;
+                            }
+                            KeyCode::Char('2') => {
+                                app.goto_tab(wattea::app::Tab::Trend);
+                                continue;
+                            }
+                            KeyCode::Char('3') => {
+                                app.goto_tab(wattea::app::Tab::Pattern);
+                                continue;
+                            }
+                            KeyCode::Char('d') if app.tab == wattea::app::Tab::Pattern => {
+                                Message::TogglePatternAxis
                             }
                             _ => continue,
                         };
@@ -110,6 +119,7 @@ fn handle(app: &mut App, msg: Message, battery: &Battery) {
     match msg {
         Message::Refresh => app.refresh(battery),
         Message::NextTab => app.next_tab(),
+        Message::TogglePatternAxis => app.toggle_pattern_axis(),
         Message::Quit => app.should_quit = true,
     }
 }

@@ -26,6 +26,15 @@ pub struct Sample {
     pub cycle_count: Option<u32>,
 }
 
+/// Desen analizi için bir sepet (hour 0–23 veya weekday 0–6).
+#[derive(Debug, Clone, Default)]
+pub struct HourlyBin {
+    /// Sepet indeksi: saatlik modda 0–23, günlük modda 0–6 (Pazar–Cmt).
+    pub hour: u8,
+    pub avg_pct_per_hour: f64,
+    pub sample_count: usize,
+}
+
 impl From<(&SystemTime, &BatterySample)> for Sample {
     fn from((ts, s): (&SystemTime, &BatterySample)) -> Self {
         Self {
@@ -133,6 +142,44 @@ impl Store {
             .conn
             .query_row("SELECT COUNT(*) FROM samples", [], |r| r.get(0))?)
     }
+
+    /// Saat-bazına ortalama %/saat tüketim deseni (0–23).
+    ///
+    /// Yalnızca `Discharging` örneklerini alır (şarjdayken desen anlamsız).
+    /// Her saat için o saatteki tüm günlerin ortalama tüketim hızıdır —
+    /// "saat 14'te genelde %X/sa harcarım" deseni.
+    pub fn query_hourly_pattern(&self) -> Result<Vec<HourlyBin>> {
+        let mut stmt = self.conn.prepare(HOURLY_PATTERN_SQL)?;
+        let rows = stmt.query_map([], |row| {
+            Ok(HourlyBin {
+                hour: row.get::<_, i64>(0)? as u8,
+                avg_pct_per_hour: row.get(1)?,
+                sample_count: row.get::<_, i64>(2)? as usize,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Gün-bazına ortalama %/saat tüketim deseni (Pazar=0 … Cumartesi=6).
+    pub fn query_weekday_pattern(&self) -> Result<Vec<HourlyBin>> {
+        let mut stmt = self.conn.prepare(WEEKDAY_PATTERN_SQL)?;
+        let rows = stmt.query_map([], |row| {
+            Ok(HourlyBin {
+                hour: row.get::<_, i64>(0)? as u8,
+                avg_pct_per_hour: row.get(1)?,
+                sample_count: row.get::<_, i64>(2)? as usize,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
 }
 
 // --- SQL sabitleri ------------------------------------------------------------
@@ -177,6 +224,34 @@ FROM (
     SELECT * FROM samples ORDER BY ts DESC LIMIT ?1
 )
 ORDER BY ts ASC
+";
+
+/// Saat-bazına ortalama %/sa (yalnız boşalma; localtime dönüşümüyle).
+const HOURLY_PATTERN_SQL: &str = "
+SELECT CAST(strftime('%H', ts, 'unixepoch', 'localtime') AS INTEGER) AS hour,
+       AVG(power_now / energy_full * 100.0)                          AS avg_rate,
+       COUNT(*)                                                     AS n
+FROM samples
+WHERE status = 'Discharging'
+  AND power_now IS NOT NULL
+  AND power_now > 0
+  AND energy_full > 0
+GROUP BY hour
+ORDER BY hour
+";
+
+/// Gün-bazına ortalama %/sa (weekday: 0=Pazar … 6=Cumartesi).
+const WEEKDAY_PATTERN_SQL: &str = "
+SELECT CAST(strftime('%w', ts, 'unixepoch', 'localtime') AS INTEGER) AS day,
+       AVG(power_now / energy_full * 100.0)                          AS avg_rate,
+       COUNT(*)                                                     AS n
+FROM samples
+WHERE status = 'Discharging'
+  AND power_now IS NOT NULL
+  AND power_now > 0
+  AND energy_full > 0
+GROUP BY day
+ORDER BY day
 ";
 
 // --- yardımcılar --------------------------------------------------------------

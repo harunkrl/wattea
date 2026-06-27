@@ -69,6 +69,37 @@ fn renders_without_panic_on_small_and_large_areas() {
 }
 
 #[test]
+fn pattern_tab_renders_with_and_without_data() {
+    use crate::app::Tab;
+    use crate::storage::HourlyBin;
+
+    let mut app = App::new(&fake_battery(), None);
+    app.sample = Some(fake_sample());
+    app.tab = Tab::Pattern;
+
+    // 1) Boş pattern (veri yok): kırılmadan çizmeli.
+    for (w, h) in [(80, 24), (120, 40)] {
+        let backend = TestBackend::new(w, h);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| ui::view(&app, f)).unwrap();
+    }
+
+    // 2) Dolu pattern: 24 saatlik sahte sepetler.
+    app.pattern = (0..24)
+        .map(|hour| HourlyBin {
+            hour,
+            avg_pct_per_hour: 10.0 + hour as f64,
+            sample_count: 5,
+        })
+        .collect();
+    for (w, h) in [(100, 30), (140, 50)] {
+        let backend = TestBackend::new(w, h);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| ui::view(&app, f)).unwrap();
+    }
+}
+
+#[test]
 fn renders_gracefully_with_no_sample_yet() {
     let app = App::new(&fake_battery(), None); // sample = None
 

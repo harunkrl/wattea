@@ -4,12 +4,28 @@ use std::collections::VecDeque;
 use std::time::Instant;
 
 use crate::battery::{Battery, BatteryInfo, BatterySample};
-use crate::storage::{Sample, Store};
+use crate::storage::{HourlyBin, Sample, Store};
 
 /// Sparkline'da tutulan canlı örnek sayısı (≈ 5 dk @ 1 sn örnekleme).
 const HISTORY_LEN: usize = 300;
 /// Trend sekmesinde gösterilen pencere: son 24 saat.
 pub const TREND_WINDOW_SECS: u64 = 24 * 3600;
+
+/// Pattern sekmesinin ekseni: günün saati veya haftanın günü.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PatternAxis {
+    Hourly,
+    Weekday,
+}
+
+impl PatternAxis {
+    pub fn toggle(self) -> Self {
+        match self {
+            Self::Hourly => Self::Weekday,
+            Self::Weekday => Self::Hourly,
+        }
+    }
+}
 
 /// Aktif görünüm sekmesi.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,13 +34,16 @@ pub enum Tab {
     Live,
     /// SQLite'ten 24 saatlik history trendi.
     Trend,
+    /// Saat-bazına / gün-bazına kullanım deseni (killer feature).
+    Pattern,
 }
 
 impl Tab {
     pub fn next(self) -> Self {
         match self {
             Self::Live => Self::Trend,
-            Self::Trend => Self::Live,
+            Self::Trend => Self::Pattern,
+            Self::Pattern => Self::Live,
         }
     }
 
@@ -32,6 +51,7 @@ impl Tab {
         match self {
             Self::Live => "Live",
             Self::Trend => "Trend · 24h",
+            Self::Pattern => "Pattern",
         }
     }
 }
@@ -46,6 +66,9 @@ pub struct App {
     pub store: Option<Store>,
     /// Son 24 saatin SQLite örnekleri — trend grafiği için.
     pub trend: Vec<Sample>,
+    /// Desen analizi sepetleri (saatlik veya günlük).
+    pub pattern: Vec<HourlyBin>,
+    pub pattern_axis: PatternAxis,
     pub tab: Tab,
     pub last_update: Option<Instant>,
     pub last_error: Option<String>,
@@ -60,6 +83,8 @@ impl App {
             power_history: VecDeque::with_capacity(HISTORY_LEN),
             store,
             trend: Vec::new(),
+            pattern: Vec::new(),
+            pattern_axis: PatternAxis::Hourly,
             tab: Tab::Live,
             last_update: None,
             last_error: None,
@@ -85,6 +110,7 @@ impl App {
         }
         // Trend verisini de tazele (SQLite'ten).
         self.refresh_trend();
+        self.refresh_pattern();
     }
 
     /// SQLite history'sinden son 24 saati yükle.
@@ -97,10 +123,40 @@ impl App {
         }
     }
 
+    /// SQLite history'sinden desen sepetlerini yükle.
+    pub fn refresh_pattern(&mut self) {
+        if let Some(store) = &self.store {
+            let res = match self.pattern_axis {
+                PatternAxis::Hourly => store.query_hourly_pattern(),
+                PatternAxis::Weekday => store.query_weekday_pattern(),
+            };
+            match res {
+                Ok(bins) => self.pattern = bins,
+                Err(e) => self.last_error = Some(format!("pattern: {e:#}")),
+            }
+        }
+    }
+
     /// Sonraki sekmeye geç.
     pub fn next_tab(&mut self) {
         self.tab = self.tab.next();
         self.refresh_trend();
+        self.refresh_pattern();
+    }
+
+    /// Pattern eksenini değiştir (saatlik ↔ günlük).
+    pub fn toggle_pattern_axis(&mut self) {
+        self.pattern_axis = self.pattern_axis.toggle();
+        self.refresh_pattern();
+    }
+
+    /// Belirli bir sekmeye git (zaten oradaysa no-op).
+    pub fn goto_tab(&mut self, tab: Tab) {
+        if self.tab != tab {
+            self.tab = tab;
+            self.refresh_trend();
+            self.refresh_pattern();
+        }
     }
 }
 
@@ -109,7 +165,9 @@ impl App {
 pub enum Message {
     /// Veriyi yenile (manuel 'r' veya otomatik tick).
     Refresh,
-    /// Sekme değiştir (Tab/2).
+    /// Sekme değiştir (Tab).
     NextTab,
+    /// Pattern eksenini değiştir (saatlik ↔ günlük, 'd').
+    TogglePatternAxis,
     Quit,
 }

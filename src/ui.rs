@@ -7,7 +7,10 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Axis, Block, Borders, Chart, Dataset, Gauge, GraphType, Paragraph, Sparkline},
+    widgets::{
+        Axis, Bar, BarChart, BarGroup, Block, Borders, Chart, Dataset, Gauge, GraphType, Paragraph,
+        Sparkline,
+    },
 };
 
 use crate::app::App;
@@ -28,6 +31,7 @@ pub fn view(app: &App, frame: &mut Frame) {
     match app.tab {
         crate::app::Tab::Live => render_live(app, frame, body),
         crate::app::Tab::Trend => render_trend(app, frame, body),
+        crate::app::Tab::Pattern => render_pattern(app, frame, body),
     }
     render_help(app, frame, help_area);
 }
@@ -188,6 +192,143 @@ fn render_trend_summary(app: &App, frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(line).block(block), area);
 }
 
+/// Pattern sekmesi: saat-bazına (veya gün-bazına) ortalama %/sa deseni.
+fn render_pattern(app: &App, frame: &mut Frame, area: Rect) {
+    let [chart_area, summary_area] =
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(5)]).areas(area);
+
+    let (axis_label, total) = match app.pattern_axis {
+        crate::app::PatternAxis::Hourly => ("hour of day · avg %/h", 24),
+        crate::app::PatternAxis::Weekday => ("day of week · avg %/h", 7),
+    };
+    let title = format!(
+        "Pattern · {axis_label}  ·  d: toggle  ·  {} bins",
+        app.pattern.len()
+    );
+    let block = Block::default().borders(Borders::ALL).title(title);
+
+    if app.pattern.is_empty() {
+        let msg = if app.store.is_none() {
+            " No history store. Run `wattea import` + the daemon. "
+        } else {
+            " No discharging samples yet — let the daemon collect data. "
+        };
+        frame.render_widget(Paragraph::new(msg).centered().block(block), chart_area);
+        return;
+    }
+
+    // Eksik sepetleri 0 ile doldur (saatlik: 0–23, günlük: 0–6).
+    let mut by_idx: std::collections::HashMap<u8, &crate::storage::HourlyBin> =
+        app.pattern.iter().map(|b| (b.hour, b)).collect();
+    let labels: Vec<String> = match app.pattern_axis {
+        crate::app::PatternAxis::Hourly => (0..total).map(|h| format!("{h:02}")).collect(),
+        crate::app::PatternAxis::Weekday => ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+    };
+
+    let max_rate = app
+        .pattern
+        .iter()
+        .map(|b| b.avg_pct_per_hour)
+        .fold(1.0_f64, f64::max);
+    let scale = 100.0; // %/h → 0..100 ölçeğinde göster
+
+    let bars: Vec<Bar> = (0..total)
+        .map(|i| {
+            let bin = by_idx.remove(&(i as u8));
+            let rate = bin.map(|b| b.avg_pct_per_hour).unwrap_or(0.0);
+            let samples = bin.map(|b| b.sample_count).unwrap_or(0);
+            let intensity = (rate / max_rate).clamp(0.0, 1.0);
+            let color = pattern_color(intensity);
+            let text_value = if samples == 0 {
+                String::new()
+            } else {
+                format!("{rate:.0}")
+            };
+            Bar::default()
+                .label(Line::from(labels[i as usize].as_str()))
+                .value((rate * scale / max_rate.max(1.0)).round() as u64)
+                .text_value(text_value)
+                .style(Style::new().fg(color))
+        })
+        .collect();
+
+    let chart = BarChart::default()
+        .block(block)
+        .data(BarGroup::default().bars(&bars))
+        .bar_width(if app.pattern_axis == crate::app::PatternAxis::Hourly {
+            2
+        } else {
+            5
+        })
+        .bar_gap(1)
+        .bar_style(Style::new().fg(Color::Yellow))
+        .value_style(Style::new().fg(Color::White).bold())
+        .label_style(Style::new().dim())
+        .max((scale).round() as u64);
+    frame.render_widget(chart, chart_area);
+
+    render_pattern_summary(app, frame, summary_area);
+}
+
+/// Pattern sekmesinin özeti: en yüksek/düşük tüketim saati, toplam örnek.
+fn render_pattern_summary(app: &App, frame: &mut Frame, area: Rect) {
+    let block = Block::default().borders(Borders::ALL).title("Summary");
+
+    let (axis_unit, total_bins) = match app.pattern_axis {
+        crate::app::PatternAxis::Hourly => ("hour", 24u8),
+        crate::app::PatternAxis::Weekday => ("day", 7u8),
+    };
+
+    let peak = app.pattern.iter().max_by(|a, b| {
+        a.avg_pct_per_hour
+            .partial_cmp(&b.avg_pct_per_hour)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let trough = app.pattern.iter().min_by(|a, b| {
+        a.avg_pct_per_hour
+            .partial_cmp(&b.avg_pct_per_hour)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let total_samples: usize = app.pattern.iter().map(|b| b.sample_count).sum();
+
+    let label_for = |idx: u8| -> String {
+        match app.pattern_axis {
+            crate::app::PatternAxis::Hourly => format!("{idx:02}:00"),
+            crate::app::PatternAxis::Weekday => ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+                .get(idx as usize)
+                .map(|s| s.to_string())
+                .unwrap_or_default(),
+        }
+    };
+
+    let mut spans = vec![
+        Span::raw(" bins "),
+        Span::raw(format!("{}/{}", app.pattern.len(), total_bins)).bold(),
+    ];
+    spans.push(Span::raw("  · samples ").dim());
+    spans.push(Span::raw(total_samples.to_string()).bold());
+    if let Some(p) = peak {
+        spans.push(Span::raw(format!("  · peak {axis_unit} ")).dim());
+        spans.push(Span::styled(
+            format!("{} ({:.1}%/h)", label_for(p.hour), p.avg_pct_per_hour),
+            Style::new().red().bold(),
+        ));
+    }
+    if let (Some(t), Some(p)) = (trough, peak)
+        && t.hour != p.hour
+    {
+        spans.push(Span::raw(format!("  · low {axis_unit} ")).dim());
+        spans.push(Span::styled(
+            format!("{} ({:.1}%/h)", label_for(t.hour), t.avg_pct_per_hour),
+            Style::new().green(),
+        ));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)).block(block), area);
+}
+
 fn render_gauge(app: &App, frame: &mut Frame, area: Rect) {
     let block = Block::default().borders(Borders::ALL).title("Charge");
 
@@ -340,9 +481,10 @@ fn render_health(app: &App, frame: &mut Frame, area: Rect) {
 }
 
 fn render_help(app: &App, frame: &mut Frame, area: Rect) {
-    let tabs: [(&str, bool); 2] = [
+    let tabs: [(&str, bool); 3] = [
         ("1 Live", app.tab == crate::app::Tab::Live),
         ("2 Trend", app.tab == crate::app::Tab::Trend),
+        ("3 Pattern", app.tab == crate::app::Tab::Pattern),
     ];
     let mut spans = vec![Span::raw(" ")];
     for (label, active) in tabs {
@@ -358,6 +500,10 @@ fn render_help(app: &App, frame: &mut Frame, area: Rect) {
     }
     spans.push(" Tab ".bold().cyan());
     spans.push("switch ".dim());
+    if app.tab == crate::app::Tab::Pattern {
+        spans.push(" d ".bold().cyan());
+        spans.push("hour/day ".dim());
+    }
     spans.push(" r ".bold().cyan());
     spans.push("refresh ".dim());
     spans.push(" q ".bold().cyan());
@@ -420,5 +566,18 @@ fn status_color(s: &BatterySample) -> Color {
         Status::Discharging => Color::LightGreen,
         Status::Full => Color::Green,
         _ => Color::DarkGray,
+    }
+}
+
+/// Desen barı rengi: yoğunluk (0–1) → yeşil/sarı/turuncu/kırmızı gradyan.
+fn pattern_color(intensity: f64) -> Color {
+    if intensity >= 0.75 {
+        Color::Red
+    } else if intensity >= 0.5 {
+        Color::LightRed
+    } else if intensity >= 0.3 {
+        Color::Yellow
+    } else {
+        Color::Green
     }
 }
