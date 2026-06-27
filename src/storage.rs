@@ -50,6 +50,12 @@ pub struct Store {
     conn: Connection,
 }
 
+impl std::fmt::Debug for Store {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Store").finish_non_exhaustive()
+    }
+}
+
 impl Store {
     /// DB'yi aç; yoksa `data_dir` altında oluştur ve şemayı kur.
     pub fn open(path: &Path) -> Result<Self> {
@@ -145,10 +151,12 @@ CREATE TABLE IF NOT EXISTS samples (
     cycle_count        INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_samples_ts ON samples(ts);
+-- Idempotent backfill: aynı ts tekrar insert edilirse sessizce yok sayılır.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_samples_ts ON samples(ts);
 ";
 
 const INSERT_SQL: &str = "
-INSERT INTO samples
+INSERT OR IGNORE INTO samples
     (ts, capacity, status, power_now, voltage, energy_now,
      energy_full, energy_full_design, cycle_count)
 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)

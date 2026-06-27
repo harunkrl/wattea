@@ -30,9 +30,9 @@ single static Rust binary, ~1.3 MB, minimal footprint.
 
 **Phase 2 — History & collection** 🚧
 
-- Background collector daemon → SQLite time-series
-- UPower `.dat` history backfill
-- 24h rate & capacity trend charts
+- Background collector daemon → SQLite time-series (60s sampling)
+- `wattea import` - UPower `.dat` history backfill (idempotent)
+- 24h rate & capacity trend chart (Trend tab)
 
 **Roadmap**
 
@@ -59,8 +59,16 @@ wattea              # launch the live TUI dashboard
 
 | Key | Action |
 |-----|--------|
+| `Tab` / `2` | switch Live ↔ Trend tabs |
+| `1` | jump to Live |
 | `r` | refresh now |
 | `q` / `Esc` | quit |
+
+Import past UPower history (run once; idempotent):
+
+```bash
+wattea import      # backfill /var/lib/upower/*.dat → SQLite
+```
 
 The background collector (Phase 2) runs as a systemd user service:
 

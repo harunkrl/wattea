@@ -9,10 +9,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UNIT="$HOME/.config/systemd/user/wattea-daemon.service"
 
 echo "==> 1/4  release build"
-( cd "$ROOT" && cargo build --release )
+(cd "$ROOT" && cargo build --release)
 
 echo "==> 2/4  binary kurulumu (~/.cargo/bin)"
-install -Dm755 "$ROOT/target/release/wattea"       "$HOME/.cargo/bin/wattea"
+install -Dm755 "$ROOT/target/release/wattea" "$HOME/.cargo/bin/wattea"
 install -Dm755 "$ROOT/target/release/wattea-daemon" "$HOME/.cargo/bin/wattea-daemon"
 
 echo "==> 3/4  systemd user unit kurulumu"
@@ -21,9 +21,9 @@ systemctl --user daemon-reload
 
 # Oturum kapalıyken de çalışsın.
 if ! loginctl show-user "$USER" 2>/dev/null | grep -q '^Linger=yes'; then
-  echo "    (loginctl enable-linger — root gerekebilir)"
-  sudo loginctl enable-linger "$USER" || \
-    echo "    UYARI: linger etkinleştirilemedi. Servis yalnızca oturum açıkken çalışır."
+	echo "    (loginctl enable-linger — root gerekebilir)"
+	sudo loginctl enable-linger "$USER" ||
+		echo "    UYARI: linger etkinleştirilemedi. Servis yalnızca oturum açıkken çalışır."
 fi
 
 echo "==> 4/4  servis başlatılıyor"

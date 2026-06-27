@@ -7,6 +7,7 @@ pub mod app;
 pub mod battery;
 pub mod storage;
 pub mod ui;
+pub mod upower;
 
 #[cfg(test)]
 mod tests;

@@ -12,24 +12,58 @@ use tokio::{select, time::interval};
 
 use wattea::app::{App, Message};
 use wattea::battery::Battery;
+use wattea::storage::Store;
 use wattea::ui;
+use wattea::upower;
 
 fn main() -> Result<()> {
     color_eyre::install()?;
+
+    // `wattea import` → UPower history backfill. `wattea` → TUI.
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 && (args[1] == "import" || args[1] == "backfill") {
+        return run_import();
+    }
+
     let battery = Battery::detect()?;
+    // DB varsa aç: hem canlı sysfs hem SQLite history birlikte gösterilir.
+    let store = wattea::db_path().and_then(|p| Store::open(&p).ok());
 
     let mut terminal = ratatui::init();
-    let result = run(&mut terminal, battery);
+    let result = run(&mut terminal, battery, store);
     ratatui::restore();
 
     result
 }
 
+/// `wattea import`: UPower `.dat` history'sini SQLite'a aktar (geri-dolum).
+fn run_import() -> Result<()> {
+    let battery = Battery::detect()?;
+    let db = wattea::db_path().ok_or_else(|| color_eyre::eyre::eyre!("veri dizini bulunamadı"))?;
+    let store = Store::open(&db)?;
+    let before = store.count()?;
+
+    let live = battery.read()?;
+    let n = upower::import(
+        &store,
+        battery.info.model.as_deref(),
+        live.energy_full,
+        live.energy_full_design,
+    )?;
+    let after = store.count()?;
+
+    println!("🔋 UPower history → SQLite");
+    println!("   import edilen örnek: {n}");
+    println!("   depodaki toplam    : {before} → {after}");
+    println!("   veritabanı         : {}", db.display());
+    Ok(())
+}
+
 /// Async ana döngü: her tick'te sysfs'i oku, klavye olaylarını dinle.
-fn run(terminal: &mut DefaultTerminal, battery: Battery) -> Result<()> {
+fn run(terminal: &mut DefaultTerminal, battery: Battery, store: Option<Store>) -> Result<()> {
     install_panic_hook();
 
-    let mut app = App::new(&battery);
+    let mut app = App::new(&battery, store);
     app.refresh(&battery); // ilk örnekleme hemen
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -48,6 +82,13 @@ fn run(terminal: &mut DefaultTerminal, battery: Battery) -> Result<()> {
                         let msg = match key.code {
                             KeyCode::Char('q') | KeyCode::Esc => Message::Quit,
                             KeyCode::Char('r') => Message::Refresh,
+                            KeyCode::Tab | KeyCode::Char('2') => Message::NextTab,
+                            KeyCode::Char('1') => {
+                                // 1 → her zaman Live sekmesi.
+                                if app.tab != wattea::app::Tab::Live {
+                                    Message::NextTab
+                                } else { continue; }
+                            }
                             _ => continue,
                         };
                         handle(&mut app, msg, &battery);
@@ -68,6 +109,7 @@ fn run(terminal: &mut DefaultTerminal, battery: Battery) -> Result<()> {
 fn handle(app: &mut App, msg: Message, battery: &Battery) {
     match msg {
         Message::Refresh => app.refresh(battery),
+        Message::NextTab => app.next_tab(),
         Message::Quit => app.should_quit = true,
     }
 }

@@ -56,7 +56,7 @@ fn fake_battery() -> Battery {
 
 #[test]
 fn renders_without_panic_on_small_and_large_areas() {
-    let mut app = App::new(&fake_battery());
+    let mut app = App::new(&fake_battery(), None);
     app.sample = Some(fake_sample());
     app.power_history.extend([5.0, 8.0, 12.0, 6.0, 10.0]);
 
@@ -70,7 +70,7 @@ fn renders_without_panic_on_small_and_large_areas() {
 
 #[test]
 fn renders_gracefully_with_no_sample_yet() {
-    let app = App::new(&fake_battery()); // sample = None
+    let app = App::new(&fake_battery(), None); // sample = None
 
     let backend = TestBackend::new(90, 24);
     let mut term = Terminal::new(backend).unwrap();

@@ -7,30 +7,47 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Borders, Gauge, Paragraph, Sparkline},
+    widgets::{Axis, Block, Borders, Chart, Dataset, Gauge, GraphType, Paragraph, Sparkline},
 };
 
 use crate::app::App;
 use crate::battery::{BatterySample, Status};
 
-/// Ana görünüm.
+/// Ana görünüm: sekme seçimine göre Live veya Trend paneli.
 pub fn view(app: &App, frame: &mut Frame) {
     let area = frame.area();
 
-    let [header, body, spark_area, health_area, help_area] = Layout::vertical([
+    let [header, body, help_area] = Layout::vertical([
         Constraint::Length(3),
-        Constraint::Length(9),
-        Constraint::Length(7),
-        Constraint::Length(3),
+        Constraint::Fill(1),
         Constraint::Length(1),
     ])
     .areas(area);
 
     render_header(app, frame, header);
-    render_body(app, frame, body);
+    match app.tab {
+        crate::app::Tab::Live => render_live(app, frame, body),
+        crate::app::Tab::Trend => render_trend(app, frame, body),
+    }
+    render_help(app, frame, help_area);
+}
+
+/// Live sekmesi: gauge + metrics + sparkline + health.
+fn render_live(app: &App, frame: &mut Frame, area: Rect) {
+    let [body, spark_area, health_area] = Layout::vertical([
+        Constraint::Length(9),
+        Constraint::Length(7),
+        Constraint::Length(3),
+    ])
+    .areas(area);
+
+    let [gauge_area, metrics_area] =
+        Layout::horizontal([Constraint::Percentage(40), Constraint::Fill(1)]).areas(body);
+
+    render_gauge(app, frame, gauge_area);
+    render_metrics(app, frame, metrics_area);
     render_sparkline(app, frame, spark_area);
     render_health(app, frame, health_area);
-    render_help(frame, help_area);
 }
 
 fn render_header(app: &App, frame: &mut Frame, area: Rect) {
@@ -68,12 +85,107 @@ fn render_header(app: &App, frame: &mut Frame, area: Rect) {
     frame.render_widget(block, area);
 }
 
-fn render_body(app: &App, frame: &mut Frame, area: Rect) {
-    let [gauge_area, metrics_area] =
-        Layout::horizontal([Constraint::Percentage(40), Constraint::Fill(1)]).areas(area);
+/// Trend sekmesi: SQLite'ten 24 saatlik kapasite & güç çizgi grafiği.
+fn render_trend(app: &App, frame: &mut Frame, area: Rect) {
+    let [chart_area, summary_area] =
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(5)]).areas(area);
 
-    render_gauge(app, frame, gauge_area);
-    render_metrics(app, frame, metrics_area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!("Trend · last 24h  ·  {} samples", app.trend.len()));
+
+    if app.trend.is_empty() {
+        let msg = if app.store.is_none() {
+            " No history store (run `wattea import` + the daemon). "
+        } else {
+            " No data yet in the last 24h. "
+        };
+        frame.render_widget(Paragraph::new(msg).centered().block(block), chart_area);
+        return;
+    }
+
+    let now = chrono_now_ts();
+    let x_min = (now - crate::app::TREND_WINDOW_SECS as i64) as f64;
+    let x_max = now as f64;
+
+    // Verileri (x=ts, y=değer) noktalarına çevir; x'i 0-tabanlı saate normalize et.
+    let cap_pts: Vec<(f64, f64)> = app
+        .trend
+        .iter()
+        .map(|s| ((s.ts as f64 - x_min) / 3600.0, s.capacity as f64))
+        .collect();
+    let pow_pts: Vec<(f64, f64)> = app
+        .trend
+        .iter()
+        .filter_map(|s| s.power_now.map(|p| ((s.ts as f64 - x_min) / 3600.0, p)))
+        .collect();
+
+    let datasets = vec![
+        Dataset::default()
+            .name("capacity %")
+            .marker(ratatui::symbols::Marker::Braille)
+            .graph_type(GraphType::Line)
+            .style(Style::new().green())
+            .data(&cap_pts),
+        Dataset::default()
+            .name("power W")
+            .marker(ratatui::symbols::Marker::Braille)
+            .graph_type(GraphType::Line)
+            .style(Style::new().yellow())
+            .data(&pow_pts),
+    ];
+
+    let chart = Chart::new(datasets)
+        .block(block)
+        .x_axis(
+            Axis::default()
+                .title("hours ago")
+                .style(Style::new().cyan())
+                .bounds([0.0, (x_max - x_min) / 3600.0])
+                .labels(vec![Span::raw("-24h"), Span::raw("-12h"), Span::raw("now")]),
+        )
+        .y_axis(
+            Axis::default()
+                .title("% / W")
+                .style(Style::new().cyan())
+                .bounds([0.0, 100.0])
+                .labels(vec![Span::raw("0"), Span::raw("50"), Span::raw("100")]),
+        );
+    frame.render_widget(chart, chart_area);
+
+    render_trend_summary(app, frame, summary_area);
+}
+
+/// Trend sekmesinin özet satırı: ortalama/zirve güç, % düşüşü.
+fn render_trend_summary(app: &App, frame: &mut Frame, area: Rect) {
+    let block = Block::default().borders(Borders::ALL).title("Summary");
+
+    let powers: Vec<f64> = app.trend.iter().filter_map(|s| s.power_now).collect();
+    let avg = (!powers.is_empty()).then(|| powers.iter().sum::<f64>() / powers.len() as f64);
+    let peak = powers.iter().cloned().fold(0.0_f64, f64::max);
+    let drop = (!app.trend.is_empty()).then(|| {
+        app.trend.first().unwrap().capacity as i16 - app.trend.last().unwrap().capacity as i16
+    });
+
+    let line = Line::from(vec![
+        Span::raw(" samples "),
+        Span::styled(format!("{}", app.trend.len()), Style::new().bold()),
+        Span::raw("  · avg power ").dim(),
+        Span::raw(opt_fmt(avg, "W", 2)),
+        Span::raw("  · peak ").dim(),
+        Span::styled(format!("{peak:.2} W"), Style::new().yellow()),
+        Span::raw("  · charge delta ").dim(),
+        Span::styled(
+            drop.map(|d| format!("{d:+}%"))
+                .unwrap_or_else(|| "—".into()),
+            Style::new().fg(match drop {
+                Some(d) if d > 0 => Color::Red,
+                Some(d) if d < 0 => Color::Green,
+                _ => Color::Reset,
+            }),
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(line).block(block), area);
 }
 
 fn render_gauge(app: &App, frame: &mut Frame, area: Rect) {
@@ -227,18 +339,41 @@ fn render_health(app: &App, frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(line).block(block), area);
 }
 
-fn render_help(frame: &mut Frame, area: Rect) {
-    let help = Line::from(vec![
-        " r ".bold().cyan(),
-        "refresh ".dim(),
-        " q ".bold().cyan(),
-        "quit ".dim(),
-        "  Wattea ".dim(),
-    ]);
-    frame.render_widget(Paragraph::new(help), area);
+fn render_help(app: &App, frame: &mut Frame, area: Rect) {
+    let tabs: [(&str, bool); 2] = [
+        ("1 Live", app.tab == crate::app::Tab::Live),
+        ("2 Trend", app.tab == crate::app::Tab::Trend),
+    ];
+    let mut spans = vec![Span::raw(" ")];
+    for (label, active) in tabs {
+        if active {
+            spans.push(Span::styled(
+                format!(" {label} "),
+                Style::new().black().on_cyan().bold(),
+            ));
+        } else {
+            spans.push(Span::raw(format!(" {label} ")).dim());
+        }
+        spans.push(Span::raw(" "));
+    }
+    spans.push(" Tab ".bold().cyan());
+    spans.push("switch ".dim());
+    spans.push(" r ".bold().cyan());
+    spans.push("refresh ".dim());
+    spans.push(" q ".bold().cyan());
+    spans.push("quit ".dim());
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 // --- yardımcılar --------------------------------------------------------------
+
+/// Şimdiki Unix zaman damgası (saniye). Trend x-ekseni normalizasyonu için.
+fn chrono_now_ts() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
 
 /// ` Label `  ` value ` biçiminde bir satır; etiket sol, değer sağ.
 fn metric_line(label: &str, value: String, color: Color) -> Line<'static> {
