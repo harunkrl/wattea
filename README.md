@@ -2,15 +2,6 @@
 <p align="center"><strong>Terminal battery consumption tracker for Linux.</strong></p>
 <p align="center"><em>Watch your watts — see how much battery you burn per hour, live and over time.</em></p>
 
-<p align="center">
-<pre>
-  ╔══════╗
-  ║▓▓▓▓▓▓║   <strong>wattea</strong>
-  ║▓▓▓▓▓▓║  terminal battery monitor
-  ╚══════╝
-</pre>
-</p>
-
 ---
 
 Wattea reads battery data straight from `/sys/class/power_supply/` (and UPower
