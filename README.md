@@ -1,21 +1,15 @@
-<div align="center">
+<h1 align="center">🔋 Wattea</h1>
+<p align="center"><strong>Terminal battery consumption tracker for Linux.</strong></p>
+<p align="center"><em>Watch your watts — see how much battery you burn per hour, live and over time.</em></p>
 
-```
+<p align="center">
+<pre>
   ╔══════╗
-  ║▓▓▓▓▓▓║   _    _      _
-  ║▓▓▓▓▓▓║  | |  | |    | |
-  ║▓▓▓▓▓▓║  | |__| | ___| |_ __   __ _
-  ║▓▓▓▓▓▓║  |  __  |/ _ \ | '_ \ / _` |
-  ╚══════╝  |_|  |_|\___/|_|_) |_\__, |
-                                  __/ |
-                                 |___/
-```
-
-**Terminal battery consumption tracker for Linux.**
-
-*Watch your watts — see how much battery you burn per hour, live and over time.*
-
-</div>
+  ║▓▓▓▓▓▓║   <strong>wattea</strong>
+  ║▓▓▓▓▓▓║  terminal battery monitor
+  ╚══════╝
+</pre>
+</p>
 
 ---
 
