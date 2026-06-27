@@ -1,0 +1,18 @@
+# Rust
+/target
+/**/*.rs.bk
+Cargo.lock.bak
+
+# Wattea runtime data (SQLite + WAL)
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+db.sqlite*
+
+# Editor / OS
+*.swp
+*.swo
+.idea/
+.vscode/
+.DS_Store
+*~
