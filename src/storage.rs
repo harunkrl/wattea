@@ -35,6 +35,49 @@ pub struct HourlyBin {
     pub sample_count: usize,
 }
 
+/// Tek bir "prizden çekilmiş" (on-battery) oturumu.
+///
+/// Ardışık Discharging örneklerinden oluşur; Charging/Full aralıklarıyla
+/// veya uzun bir boşlukla (örn. suspend) bölünür.
+#[derive(Debug, Clone)]
+pub struct Session {
+    pub start_ts: i64,
+    pub end_ts: i64,
+    pub start_capacity: u8,
+    pub end_capacity: u8,
+    pub power_sum: f64,
+    pub sample_count: usize,
+}
+
+impl Session {
+    /// Oturum süresi (saniye).
+    pub fn duration_secs(&self) -> i64 {
+        self.end_ts - self.start_ts
+    }
+
+    /// Toplam % kaybı (negatif = şarj olmuş, ama discharging-only olduğu için genelde ≥0).
+    pub fn capacity_drop(&self) -> i16 {
+        self.start_capacity as i16 - self.end_capacity as i16
+    }
+
+    /// Ortalama güç (W); power ölçümü olmayan örnekler toplama katılmaz.
+    pub fn avg_power(&self) -> Option<f64> {
+        if self.sample_count == 0 {
+            return None;
+        }
+        Some(self.power_sum / self.sample_count as f64)
+    }
+
+    /// Oturumun ortalama %/saat tüketimi: drop / süre.
+    pub fn avg_pct_per_hour(&self) -> Option<f64> {
+        let hours = self.duration_secs() as f64 / 3600.0;
+        if hours <= 0.0 {
+            return None;
+        }
+        Some(self.capacity_drop().max(0) as f64 / hours)
+    }
+}
+
 impl From<(&SystemTime, &BatterySample)> for Sample {
     fn from((ts, s): (&SystemTime, &BatterySample)) -> Self {
         Self {
@@ -180,6 +223,79 @@ impl Store {
         }
         Ok(out)
     }
+
+    /// Tüm örnekleri ts artan sırada döndür (session segmentasyonu/export için).
+    pub fn query_all(&self) -> Result<Vec<Sample>> {
+        let mut stmt = self.conn.prepare(SELECT_ALL_SQL)?;
+        let rows = stmt.query_map([], row_to_sample)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// On-battery (Discharging) oturumlarını segmente et.
+    ///
+    /// `gap_secs`'den büyük boşluk yeni oturum sayılır (suspend/örnekleme
+    /// atlamalarını ayırır). Sonuç en yeni oturum en üstte olacak şekilde
+    /// ters kronolojik döner.
+    pub fn query_sessions(&self, gap_secs: i64) -> Result<Vec<Session>> {
+        let samples = self.query_all()?;
+        let mut sessions: Vec<Session> = Vec::new();
+        let mut current: Option<Session> = None;
+
+        for s in samples {
+            let discharging = s.status == crate::battery::Status::Discharging;
+            if discharging {
+                let power = s.power_now.unwrap_or(0.0).max(0.0);
+                match &mut current {
+                    None => {
+                        current = Some(Session {
+                            start_ts: s.ts,
+                            end_ts: s.ts,
+                            start_capacity: s.capacity,
+                            end_capacity: s.capacity,
+                            power_sum: power,
+                            sample_count: 1,
+                        });
+                    }
+                    Some(sess) => {
+                        let gap = s.ts - sess.end_ts;
+                        if gap > gap_secs {
+                            // Uzun boşluk: oturumu kapat, yenisini aç.
+                            if let Some(c) = current.take() {
+                                sessions.push(c);
+                            }
+                            current = Some(Session {
+                                start_ts: s.ts,
+                                end_ts: s.ts,
+                                start_capacity: s.capacity,
+                                end_capacity: s.capacity,
+                                power_sum: power,
+                                sample_count: 1,
+                            });
+                        } else {
+                            sess.end_ts = s.ts;
+                            sess.end_capacity = s.capacity;
+                            sess.power_sum += power;
+                            sess.sample_count += 1;
+                        }
+                    }
+                }
+            } else if current.is_some() {
+                // Discharging dışına çıkıldı (şarj/dolu): oturumu kapat.
+                sessions.push(current.take().unwrap());
+            }
+        }
+        if let Some(c) = current.take() {
+            sessions.push(c);
+        }
+
+        // En yeni en üstte.
+        sessions.sort_by_key(|b| std::cmp::Reverse(b.start_ts));
+        Ok(sessions)
+    }
 }
 
 // --- SQL sabitleri ------------------------------------------------------------
@@ -223,6 +339,13 @@ SELECT ts, capacity, status, power_now, voltage, energy_now,
 FROM (
     SELECT * FROM samples ORDER BY ts DESC LIMIT ?1
 )
+ORDER BY ts ASC
+";
+
+const SELECT_ALL_SQL: &str = "
+SELECT ts, capacity, status, power_now, voltage, energy_now,
+       energy_full, energy_full_design, cycle_count
+FROM samples
 ORDER BY ts ASC
 ";
 

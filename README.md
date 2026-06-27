@@ -40,10 +40,15 @@ single static Rust binary, ~1.3 MB, minimal footprint.
 - Per-**day-of-week** comparison (toggle with `d`)
 - Color-coded by intensity, peak/trough highlighted
 
+**Phase 4 — Sessions & export** ✅
+
+- On-**battery session** table (unplug → plug cycles): duration, % drop,
+  avg %/h, avg W per session
+- `wattea export [file]` — CSV dump of all samples (RFC 4180, UTC timestamps)
+
 **Roadmap**
 
-- Phase 4 — Session & cycle analysis, health degradation trends
-- Phase 5 — CPU/brightness correlation, anomalies, CSV export
+- Phase 5 — CPU/brightness correlation, anomaly detection, health degradation trends
 
 ## 📦 Install
 
@@ -64,8 +69,9 @@ wattea              # launch the live TUI dashboard
 
 | Key | Action |
 |-----|--------|
-| `Tab` / `2` | switch Live ↔ Trend tabs |
-| `1` | jump to Live |
+| `Tab` | cycle Live → Trend → Pattern → Sessions |
+| `1` / `2` / `3` / `4` | jump to a tab |
+| `d` | toggle hour/day (Pattern tab) |
 | `r` | refresh now |
 | `q` / `Esc` | quit |
 
@@ -73,6 +79,7 @@ Import past UPower history (run once; idempotent):
 
 ```bash
 wattea import      # backfill /var/lib/upower/*.dat → SQLite
+wattea export data.csv   # dump all samples to CSV (omit file → stdout)
 ```
 
 The background collector (Phase 2) runs as a systemd user service:

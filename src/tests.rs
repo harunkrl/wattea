@@ -100,6 +100,73 @@ fn pattern_tab_renders_with_and_without_data() {
 }
 
 #[test]
+fn sessions_tab_renders_with_and_without_data() {
+    use crate::app::Tab;
+    use crate::storage::Session;
+
+    let mut app = App::new(&fake_battery(), None);
+    app.sample = Some(fake_sample());
+    app.tab = Tab::Sessions;
+
+    // 1) Boş (oturum yok).
+    for (w, h) in [(80, 24), (120, 40)] {
+        let backend = TestBackend::new(w, h);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| ui::view(&app, f)).unwrap();
+    }
+
+    // 2) Dolu: 3 sahte oturum.
+    app.sessions = vec![
+        Session {
+            start_ts: 1000,
+            end_ts: 6400,
+            start_capacity: 90,
+            end_capacity: 80,
+            power_sum: 50.0,
+            sample_count: 10,
+        },
+        Session {
+            start_ts: 10000,
+            end_ts: 10000,
+            start_capacity: 50,
+            end_capacity: 50,
+            power_sum: 0.0,
+            sample_count: 1,
+        },
+        Session {
+            start_ts: 20000,
+            end_ts: 56000,
+            start_capacity: 40,
+            end_capacity: 20,
+            power_sum: 200.0,
+            sample_count: 60,
+        },
+    ];
+    let backend = TestBackend::new(120, 30);
+    let mut term = Terminal::new(backend).unwrap();
+    term.draw(|f| ui::view(&app, f)).unwrap();
+}
+
+#[test]
+fn session_metrics_are_correct() {
+    use crate::storage::Session;
+    let s = Session {
+        start_ts: 0,
+        end_ts: 3600, // 1 saat
+        start_capacity: 80,
+        end_capacity: 70,
+        power_sum: 100.0,
+        sample_count: 60,
+    };
+    assert_eq!(s.capacity_drop(), 10);
+    assert_eq!(s.duration_secs(), 3600);
+    // 10% / 1h = 10 %/h
+    assert!((s.avg_pct_per_hour().unwrap() - 10.0).abs() < 0.01);
+    // 100W·60 örnek / 60 = 1.67W ortalama
+    assert!((s.avg_power().unwrap() - 1.667).abs() < 0.01);
+}
+
+#[test]
 fn renders_gracefully_with_no_sample_yet() {
     let app = App::new(&fake_battery(), None); // sample = None
 

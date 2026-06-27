@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 use std::time::Instant;
 
 use crate::battery::{Battery, BatteryInfo, BatterySample};
-use crate::storage::{HourlyBin, Sample, Store};
+use crate::storage::{HourlyBin, Sample, Session, Store};
 
 /// Sparkline'da tutulan canlı örnek sayısı (≈ 5 dk @ 1 sn örnekleme).
 const HISTORY_LEN: usize = 300;
@@ -34,8 +34,10 @@ pub enum Tab {
     Live,
     /// SQLite'ten 24 saatlik history trendi.
     Trend,
-    /// Saat-bazına / gün-bazına kullanım deseni (killer feature).
+    /// Saat-bazına / gün-bazına kullanım deseni.
     Pattern,
+    /// On-battery oturumları (prizden-çek → prize-tak döngüleri).
+    Sessions,
 }
 
 impl Tab {
@@ -43,7 +45,8 @@ impl Tab {
         match self {
             Self::Live => Self::Trend,
             Self::Trend => Self::Pattern,
-            Self::Pattern => Self::Live,
+            Self::Pattern => Self::Sessions,
+            Self::Sessions => Self::Live,
         }
     }
 
@@ -52,6 +55,7 @@ impl Tab {
             Self::Live => "Live",
             Self::Trend => "Trend · 24h",
             Self::Pattern => "Pattern",
+            Self::Sessions => "Sessions",
         }
     }
 }
@@ -69,6 +73,8 @@ pub struct App {
     /// Desen analizi sepetleri (saatlik veya günlük).
     pub pattern: Vec<HourlyBin>,
     pub pattern_axis: PatternAxis,
+    /// On-battery oturumları (en yeni en üstte).
+    pub sessions: Vec<Session>,
     pub tab: Tab,
     pub last_update: Option<Instant>,
     pub last_error: Option<String>,
@@ -85,6 +91,7 @@ impl App {
             trend: Vec::new(),
             pattern: Vec::new(),
             pattern_axis: PatternAxis::Hourly,
+            sessions: Vec::new(),
             tab: Tab::Live,
             last_update: None,
             last_error: None,
@@ -111,6 +118,7 @@ impl App {
         // Trend verisini de tazele (SQLite'ten).
         self.refresh_trend();
         self.refresh_pattern();
+        self.refresh_sessions();
     }
 
     /// SQLite history'sinden son 24 saati yükle.
@@ -142,6 +150,7 @@ impl App {
         self.tab = self.tab.next();
         self.refresh_trend();
         self.refresh_pattern();
+        self.refresh_sessions();
     }
 
     /// Pattern eksenini değiştir (saatlik ↔ günlük).
@@ -156,6 +165,18 @@ impl App {
             self.tab = tab;
             self.refresh_trend();
             self.refresh_pattern();
+            self.refresh_sessions();
+        }
+    }
+
+    /// On-battery oturumlarını yükle.
+    pub fn refresh_sessions(&mut self) {
+        if let Some(store) = &self.store {
+            // 10 dk'dan büyük boşluk yeni oturum sayılır.
+            match store.query_sessions(600) {
+                Ok(s) => self.sessions = s,
+                Err(e) => self.last_error = Some(format!("sessions: {e:#}")),
+            }
         }
     }
 }

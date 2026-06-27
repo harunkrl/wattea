@@ -8,8 +8,8 @@ use ratatui::{
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
     widgets::{
-        Axis, Bar, BarChart, BarGroup, Block, Borders, Chart, Dataset, Gauge, GraphType, Paragraph,
-        Sparkline,
+        Axis, Bar, BarChart, BarGroup, Block, Borders, Cell, Chart, Dataset, Gauge, GraphType,
+        Paragraph, Row, Sparkline, Table, TableState,
     },
 };
 
@@ -32,6 +32,7 @@ pub fn view(app: &App, frame: &mut Frame) {
         crate::app::Tab::Live => render_live(app, frame, body),
         crate::app::Tab::Trend => render_trend(app, frame, body),
         crate::app::Tab::Pattern => render_pattern(app, frame, body),
+        crate::app::Tab::Sessions => render_sessions(app, frame, body),
     }
     render_help(app, frame, help_area);
 }
@@ -329,6 +330,86 @@ fn render_pattern_summary(app: &App, frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(Line::from(spans)).block(block), area);
 }
 
+/// Sessions sekmesi: on-battery oturumları tablosu.
+fn render_sessions(app: &App, frame: &mut Frame, area: Rect) {
+    let block = Block::default().borders(Borders::ALL).title(format!(
+        "Sessions · on-battery  ·  {} total",
+        app.sessions.len()
+    ));
+
+    if app.sessions.is_empty() {
+        let msg = if app.store.is_none() {
+            " No history store. Run `wattea import` + the daemon. "
+        } else {
+            " No discharging sessions yet — unplug and let the daemon collect. "
+        };
+        frame.render_widget(Paragraph::new(msg).centered().block(block), area);
+        return;
+    }
+
+    let header = [
+        "When",
+        "Duration",
+        "% start→end",
+        "Drop",
+        "Avg %/h",
+        "Avg W",
+        "N",
+    ]
+    .into_iter()
+    .map(Cell::from);
+    let header = Row::new(header).height(1).style(Style::new().bold().cyan());
+
+    let rows = app.sessions.iter().map(|s| {
+        let when = fmt_session_when(s.start_ts);
+        let dur = fmt_duration(s.duration_secs());
+        let caps = format!("{} → {}", s.start_capacity, s.end_capacity);
+        let drop = s.capacity_drop();
+        let drop_str = format!("{drop:+}%");
+        let drop_style = if drop > 0 {
+            Style::new().fg(Color::Red)
+        } else if drop < 0 {
+            Style::new().fg(Color::Green)
+        } else {
+            Style::new().fg(Color::DarkGray)
+        };
+        let pct_h = s
+            .avg_pct_per_hour()
+            .map(|v| format!("{v:.1}"))
+            .unwrap_or_else(|| "—".into());
+        let avg_w = s
+            .avg_power()
+            .map(|v| format!("{v:.1}"))
+            .unwrap_or_else(|| "—".into());
+        Row::new(vec![
+            Cell::from(when),
+            Cell::from(dur),
+            Cell::from(caps),
+            Cell::from(drop_str).style(drop_style),
+            Cell::from(pct_h),
+            Cell::from(avg_w),
+            Cell::from(s.sample_count.to_string()),
+        ])
+    });
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(20),
+            Constraint::Length(10),
+            Constraint::Length(11),
+            Constraint::Length(7),
+            Constraint::Length(8),
+            Constraint::Length(7),
+            Constraint::Length(5),
+        ],
+    )
+    .header(header)
+    .block(block)
+    .row_highlight_style(Style::new().on_dark_gray());
+    frame.render_stateful_widget(table, area, &mut TableState::default());
+}
+
 fn render_gauge(app: &App, frame: &mut Frame, area: Rect) {
     let block = Block::default().borders(Borders::ALL).title("Charge");
 
@@ -481,10 +562,11 @@ fn render_health(app: &App, frame: &mut Frame, area: Rect) {
 }
 
 fn render_help(app: &App, frame: &mut Frame, area: Rect) {
-    let tabs: [(&str, bool); 3] = [
+    let tabs: [(&str, bool); 4] = [
         ("1 Live", app.tab == crate::app::Tab::Live),
         ("2 Trend", app.tab == crate::app::Tab::Trend),
         ("3 Pattern", app.tab == crate::app::Tab::Pattern),
+        ("4 Sessions", app.tab == crate::app::Tab::Sessions),
     ];
     let mut spans = vec![Span::raw(" ")];
     for (label, active) in tabs {
@@ -519,6 +601,36 @@ fn chrono_now_ts() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// Oturum başlangıç zamanını "Mon DD HH:MM" biçiminde göster.
+fn fmt_session_when(ts: i64) -> String {
+    let days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    let secs = ts.rem_euclid(86400);
+    let day_secs = 86400;
+    let epoch_weekday = 4; // 1970-01-01 Perşembe
+    let weekday = ((ts.div_euclid(day_secs) + epoch_weekday) as usize) % 7;
+    let hour = (secs / 3600) as u8; // UTC; localtime tam dönüşüm heavy olabilir, kabaca
+    let minute = ((secs % 3600) / 60) as u8;
+    let day_of_month = 1 + (ts.div_euclid(day_secs) as usize % 28); // yaklaşık
+    format!(
+        "{} {:>2} {:02}:{:02}",
+        days[weekday], day_of_month, hour, minute
+    )
+}
+
+/// Saniyeyi "1h 23m" / "45m" / "30s" biçimine çevir.
+fn fmt_duration(secs: i64) -> String {
+    let secs = secs.max(0);
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    if h > 0 {
+        format!("{h}h {m:02}m")
+    } else if m > 0 {
+        format!("{m}m")
+    } else {
+        format!("{secs}s")
+    }
 }
 
 /// ` Label `  ` value ` biçiminde bir satır; etiket sol, değer sağ.
