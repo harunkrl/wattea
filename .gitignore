@@ -21,3 +21,9 @@ db.sqlite*
 ARASTIRMA_RAPORU.md
 *.rapor.md
 NOTES.md
+
+# Visual brainstorming companion (local mockups)
+.superpowers/
+
+# Local working docs / specs / screenshots (not part of the project)
+docs/

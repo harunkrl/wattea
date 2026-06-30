@@ -5,6 +5,7 @@
 
 pub mod app;
 pub mod battery;
+pub mod process;
 pub mod storage;
 pub mod system;
 pub mod ui;

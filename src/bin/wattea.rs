@@ -179,6 +179,7 @@ fn run(terminal: &mut DefaultTerminal, battery: Battery, store: Option<Store>) -
                             KeyCode::Char('q') | KeyCode::Esc => Message::Quit,
                             KeyCode::Char('r') => Message::Refresh,
                             KeyCode::Tab => Message::NextTab,
+                            KeyCode::Char('c') => Message::ToggleCompact,
                             KeyCode::Char('1') => {
                                 app.goto_tab(wattea::app::Tab::Live);
                                 continue;
@@ -195,8 +196,15 @@ fn run(terminal: &mut DefaultTerminal, battery: Battery, store: Option<Store>) -
                                 app.goto_tab(wattea::app::Tab::Sessions);
                                 continue;
                             }
+                            KeyCode::Char('5') => {
+                                app.goto_tab(wattea::app::Tab::Processes);
+                                continue;
+                            }
                             KeyCode::Char('d') if app.tab == wattea::app::Tab::Pattern => {
                                 Message::TogglePatternAxis
+                            }
+                            KeyCode::Char('d') if app.tab == wattea::app::Tab::Processes => {
+                                Message::ToggleProcessView
                             }
                             _ => continue,
                         };
@@ -220,6 +228,8 @@ fn handle(app: &mut App, msg: Message, battery: &Battery) {
         Message::Refresh => app.refresh(battery),
         Message::NextTab => app.next_tab(),
         Message::TogglePatternAxis => app.toggle_pattern_axis(),
+        Message::ToggleProcessView => app.toggle_process_view(),
+        Message::ToggleCompact => app.toggle_compact(),
         Message::Quit => app.should_quit = true,
     }
 }

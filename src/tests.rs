@@ -1,6 +1,6 @@
 //! TestBackend ile UI render'ının kırılmadığını doğrular.
 
-use ratatui::{Terminal, backend::TestBackend};
+use ratatui::{backend::TestBackend, Terminal};
 
 use crate::app::App;
 use crate::battery::{Battery, BatteryInfo, BatterySample, Status};
@@ -173,4 +173,82 @@ fn renders_gracefully_with_no_sample_yet() {
     let backend = TestBackend::new(90, 24);
     let mut term = Terminal::new(backend).unwrap();
     term.draw(|f| ui::view(&app, f)).unwrap();
+}
+
+/// Responsive audit: tüm 4 sekme, 5 farklı terminal boyutunda kırılmadan
+/// render edilmeli (collapse eşikleri dahil: 60, 68, 80, 100, 120, 140).
+#[test]
+fn all_tabs_render_across_sizes() {
+    use crate::app::Tab;
+    use crate::storage::Sample;
+    use crate::system::SystemMetrics;
+
+    let mut app = App::new(&fake_battery(), None);
+    app.sample = Some(fake_sample());
+    app.power_history.extend([5.0, 8.0, 12.0, 6.0, 10.0]);
+    app.sys = Some(SystemMetrics {
+        cpu_load: Some(72.0), // warn bandı
+        brightness: Some(80.0),
+        temperature: Some(48.0), // ok bandı
+    });
+    // 24 saatlik trend verisi (Trend stacked grafikleri için).
+    let base = 1_700_000_000_i64;
+    app.trend = (0..8)
+        .map(|i| Sample {
+            ts: base + i * 3600,
+            capacity: 90 - i as u8,
+            status: Status::Discharging,
+            power_now: Some(8.0 + i as f64),
+            voltage: Some(16.0),
+            energy_now: Some(40.0),
+            energy_full: 50.6,
+            energy_full_design: 56.0,
+            cycle_count: Some(110),
+            cpu_load: Some(40.0 + i as f64),
+            brightness: Some(70.0),
+            temperature: Some(45.0 + i as f64),
+        })
+        .collect();
+
+    for tab in [
+        Tab::Live,
+        Tab::Trend,
+        Tab::Pattern,
+        Tab::Sessions,
+        Tab::Processes,
+    ] {
+        app.tab = tab;
+        for (w, h) in [
+            (60, 20),
+            (68, 22),
+            (80, 24),
+            (100, 30),
+            (120, 40),
+            (140, 50),
+        ] {
+            let backend = TestBackend::new(w, h);
+            let mut term = Terminal::new(backend).unwrap();
+            term.draw(|f| ui::view(&app, f)).unwrap();
+        }
+    }
+}
+
+/// Compact mod (default) tüm boyutlarda kırılmadan render olmalı.
+#[test]
+fn compact_mode_renders_across_sizes() {
+    use crate::system::SystemMetrics;
+    let mut app = App::new(&fake_battery(), None);
+    app.sample = Some(fake_sample());
+    app.power_history.extend([5.0, 8.0, 12.0, 6.0, 10.0]);
+    app.sys = Some(SystemMetrics {
+        cpu_load: Some(72.0),
+        brightness: Some(80.0),
+        temperature: Some(48.0),
+    });
+    assert!(app.compact, "compact açılışta default olmalı");
+    for (w, h) in [(60, 20), (80, 24), (120, 40), (140, 50)] {
+        let backend = TestBackend::new(w, h);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|f| ui::view(&app, f)).unwrap();
+    }
 }

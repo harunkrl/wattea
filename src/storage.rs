@@ -7,7 +7,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use color_eyre::eyre::{Context, Result};
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 
 use crate::battery::{BatterySample, Status};
 
@@ -89,6 +89,15 @@ pub struct Anomaly {
     pub z_score: f64,
     pub mean: f64,
     pub capacity: u8,
+}
+
+/// Process başına toplu tahmini güç (history sorgusu için).
+#[derive(Debug, Clone)]
+pub struct ProcessAgg {
+    pub name: String,
+    pub avg_w: f64,
+    pub avg_cpu_pct: f64,
+    pub sample_count: usize,
 }
 
 impl Sample {
@@ -356,6 +365,52 @@ impl Store {
         sessions.sort_by_key(|b| std::cmp::Reverse(b.start_ts));
         Ok(sessions)
     }
+
+    /// Process snapshot'larını toplu ekle (daemon çağırır).
+    pub fn insert_process_snapshots(
+        &self,
+        ts: i64,
+        snaps: &[crate::process::ProcessPower],
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut stmt = tx.prepare(INSERT_PROC_SQL)?;
+            for p in snaps {
+                stmt.execute(params![ts, p.pid, p.name, p.cpu_pct, p.est_w])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Belirli bir penceredeki (saniye) process'leri ada göre toplulaştır:
+    /// ortalama W, ortalama CPU%, örnek sayısı. Yüksek ortalama W'dan düşüğe.
+    pub fn query_top_processes(&self, window_secs: u64) -> Result<Vec<ProcessAgg>> {
+        let now = now_ts();
+        let cutoff = now - window_secs as i64;
+        let mut stmt = self.conn.prepare(TOP_PROC_SQL)?;
+        let rows = stmt.query_map(params![cutoff], |row| {
+            Ok(ProcessAgg {
+                name: row.get(0)?,
+                avg_w: row.get(1)?,
+                avg_cpu_pct: row.get(2)?,
+                sample_count: row.get::<_, i64>(3)? as usize,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// `retention_secs`'den eski process snapshot'larını sil.
+    pub fn prune_process_snapshots(&self, retention_secs: u64) -> Result<usize> {
+        let now = now_ts();
+        let cutoff = now - retention_secs as i64;
+        let n = self.conn.execute(PRUNE_PROC_SQL, params![cutoff])?;
+        Ok(n)
+    }
 }
 
 // --- SQL sabitleri ------------------------------------------------------------
@@ -379,6 +434,18 @@ CREATE TABLE IF NOT EXISTS samples (
 CREATE INDEX IF NOT EXISTS idx_samples_ts ON samples(ts);
 -- Idempotent backfill: aynı ts tekrar insert edilirse sessizce yok sayılır.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_samples_ts ON samples(ts);
+
+-- Process başına tahmini güç snapshot'ları (daemon yazar).
+CREATE TABLE IF NOT EXISTS process_snapshot (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts      INTEGER NOT NULL,
+    pid     INTEGER NOT NULL,
+    name    TEXT    NOT NULL,
+    cpu_pct REAL    NOT NULL,
+    est_w   REAL    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_proc_ts ON process_snapshot(ts);
+CREATE INDEX IF NOT EXISTS idx_proc_name_ts ON process_snapshot(name, ts);
 ";
 
 const INSERT_SQL: &str = "
@@ -442,6 +509,29 @@ WHERE status = 'Discharging'
   AND energy_full > 0
 GROUP BY day
 ORDER BY day
+";
+
+/// Process snapshot toplu ekleme.
+const INSERT_PROC_SQL: &str = "
+INSERT INTO process_snapshot (ts, pid, name, cpu_pct, est_w)
+VALUES (?1, ?2, ?3, ?4, ?5)
+";
+
+/// Pencere içinde ada göre toplu tahmini güç (avg W'ya göre azalan).
+const TOP_PROC_SQL: &str = "
+SELECT name,
+       AVG(est_w)   AS avg_w,
+       AVG(cpu_pct) AS avg_cpu,
+       COUNT(*)     AS n
+FROM process_snapshot
+WHERE ts >= ?1
+GROUP BY name
+ORDER BY avg_w DESC
+";
+
+/// Eski process snapshot'larını sil (retention).
+const PRUNE_PROC_SQL: &str = "
+DELETE FROM process_snapshot WHERE ts < ?1
 ";
 
 // --- yardımcılar --------------------------------------------------------------
@@ -723,5 +813,52 @@ mod tests {
         assert!(cols.contains(&"cpu_load".into()));
         assert!(cols.contains(&"brightness".into()));
         assert!(cols.contains(&"temperature".into()));
+    }
+
+    #[test]
+    fn process_snapshots_insert_query_prune() {
+        use crate::process::ProcessPower;
+        let store = Store::open_in_memory().unwrap();
+        let now = now_ts();
+
+        // Şimdi civarı iki snapshot grubu (chrome + firefox).
+        let snaps = vec![
+            ProcessPower {
+                pid: 1,
+                name: "chrome".into(),
+                cpu_pct: 40.0,
+                est_w: 1.6,
+            },
+            ProcessPower {
+                pid: 2,
+                name: "firefox".into(),
+                cpu_pct: 10.0,
+                est_w: 0.4,
+            },
+        ];
+        store.insert_process_snapshots(now, &snaps).unwrap();
+        store.insert_process_snapshots(now + 60, &snaps).unwrap();
+
+        // Eski (pencere dışı) kayıt → hariç kalmalı.
+        let old = vec![ProcessPower {
+            pid: 3,
+            name: "old".into(),
+            cpu_pct: 5.0,
+            est_w: 0.2,
+        }];
+        store.insert_process_snapshots(now - 7200, &old).unwrap();
+
+        // Son 1 saat (3600sn) sorgusu: chrome avg 1.6 (2 örnek), firefox 0.4.
+        let top = store.query_top_processes(3600).unwrap();
+        assert_eq!(top.len(), 2); // 'old' hariç
+        assert_eq!(top[0].name, "chrome");
+        assert!((top[0].avg_w - 1.6).abs() < 1e-6);
+        assert_eq!(top[0].sample_count, 2);
+
+        // Prune: 1 saatlik retention → eski hariç hepsi silinir.
+        let removed = store.prune_process_snapshots(3600).unwrap();
+        assert!(removed >= 1, "eski kayıt silinmeli");
+        let top2 = store.query_top_processes(u64::MAX / 2).unwrap();
+        assert!(top2.iter().all(|p| p.name != "old"));
     }
 }

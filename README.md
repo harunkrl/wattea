@@ -26,7 +26,8 @@ footprint, so the battery tool never becomes the battery drain.
 
 - Background collector samples `sysfs` every 60 seconds into a local SQLite store
 - Import past UPower history (`wattea import`)
-- 24-hour capacity and power-draw trend chart
+- 24-hour capacity and power-draw trend, drawn as **stacked charts** with
+  dynamic scaling (power no longer squashed against the axis)
 
 **Usage patterns**
 
@@ -42,6 +43,18 @@ footprint, so the battery tool never becomes the battery drain.
 **Anomaly detection**
 
 - Power-draw spikes flagged by statistical deviation (z-score), surfaced live
+
+**Per-process power (estimated)**
+
+- Top processes by **estimated** CPU power share (CPU time × RAPL package energy)
+- Toggle between **live** and **last-hour aggregate** views
+- Honest estimate — labelled `est.`, degrades to CPU% when RAPL is unavailable
+
+**Compact mode**
+
+- Dense single-screen **btop-style** dashboard (default on startup): charge,
+  metrics, power graph, top processes, and system bars all visible at once
+- Press `c` to switch to the detailed multi-tab view
 
 ## Install
 
@@ -73,19 +86,21 @@ Launch the dashboard:
 wattea
 ```
 
-It has four tabs:
+It has five tabs:
 
 | Key | Tab | What it shows |
 |-----|-----|---------------|
-| `1` | Live | charge gauge, %/h, sparkline, health, CPU/brightness/temp |
-| `2` | Trend | 24h capacity + power chart |
+| `1` | Live | charge bar, %/h, metrics grid, power graph, health, CPU/brightness/temp |
+| `2` | Trend | 24h capacity + power charts (stacked, dynamically scaled) |
 | `3` | Pattern | %/h by hour-of-day / day-of-week |
 | `4` | Sessions | on-battery session table |
+| `5` | Processes | top processes by estimated power (live / last-hour) |
 
 | Key | Action |
 |-----|--------|
+| `c` | toggle compact (dense single-screen) ↔ tabbed view |
 | `Tab` | cycle tabs |
-| `d` | toggle hour/day view (Pattern tab) |
+| `d` | toggle hour/day (Pattern), or live/last-hour (Processes) |
 | `r` | refresh now |
 | `q` / `Esc` | quit |
 

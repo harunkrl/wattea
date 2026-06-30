@@ -4,7 +4,8 @@ use std::collections::VecDeque;
 use std::time::Instant;
 
 use crate::battery::{Battery, BatteryInfo, BatterySample};
-use crate::storage::{Anomaly, HourlyBin, Sample, Session, Store};
+use crate::process::{ProcessPower, ProcessReader};
+use crate::storage::{Anomaly, HourlyBin, ProcessAgg, Sample, Session, Store};
 use crate::system::{SystemMetrics, SystemReader};
 
 /// Sparkline'da tutulan canlı örnek sayısı (≈ 5 dk @ 1 sn örnekleme).
@@ -28,6 +29,13 @@ impl PatternAxis {
     }
 }
 
+/// Process sekmesinin görünümü: canlı veya son-1-saat-top (history).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessView {
+    Live,
+    LastHour,
+}
+
 /// Aktif görünüm sekmesi.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -39,6 +47,8 @@ pub enum Tab {
     Pattern,
     /// On-battery oturumları (prizden-çek → prize-tak döngüleri).
     Sessions,
+    /// Process başına **tahmini** güç tüketimi (canlı).
+    Processes,
 }
 
 impl Tab {
@@ -47,7 +57,8 @@ impl Tab {
             Self::Live => Self::Trend,
             Self::Trend => Self::Pattern,
             Self::Pattern => Self::Sessions,
-            Self::Sessions => Self::Live,
+            Self::Sessions => Self::Processes,
+            Self::Processes => Self::Live,
         }
     }
 
@@ -57,6 +68,7 @@ impl Tab {
             Self::Trend => "Trend · 24h",
             Self::Pattern => "Pattern",
             Self::Sessions => "Sessions",
+            Self::Processes => "Processes",
         }
     }
 }
@@ -68,6 +80,13 @@ pub struct App {
     /// Canlı sistem metrikleri (CPU/parlaklık/sıcaklık).
     pub sys: Option<SystemMetrics>,
     sys_reader: SystemReader,
+    /// Process başına tahmini güç (canlı). Sıralı: yüksek→düşük.
+    pub processes: Vec<ProcessPower>,
+    proc_reader: ProcessReader,
+    /// Process sekmesi görünümü: canlı ↔ son-1-saat.
+    pub process_view: ProcessView,
+    /// Process history: son 1 saatte ada göre toplu tahmini güç.
+    pub process_history: Vec<ProcessAgg>,
     /// Son N ölçümün gücü (W) — canlı sparkline için.
     pub power_history: VecDeque<f64>,
     /// SQLite history deposu (varsa). Trend sekmesi bunu kullanır.
@@ -82,6 +101,8 @@ pub struct App {
     /// Beklenenden yüksek güç tüketen anomaliler (z≥2).
     pub anomalies: Vec<Anomaly>,
     pub tab: Tab,
+    /// Compact mod (btop tarzı yoğun tek-ekran). Açılışta default açık.
+    pub compact: bool,
     pub last_update: Option<Instant>,
     pub last_error: Option<String>,
     pub should_quit: bool,
@@ -94,6 +115,10 @@ impl App {
             sample: None,
             sys: None,
             sys_reader: SystemReader::new(),
+            processes: Vec::new(),
+            proc_reader: ProcessReader::new(),
+            process_view: ProcessView::Live,
+            process_history: Vec::new(),
             power_history: VecDeque::with_capacity(HISTORY_LEN),
             store,
             trend: Vec::new(),
@@ -102,6 +127,7 @@ impl App {
             sessions: Vec::new(),
             anomalies: Vec::new(),
             tab: Tab::Live,
+            compact: true,
             last_update: None,
             last_error: None,
             should_quit: false,
@@ -126,6 +152,11 @@ impl App {
         }
         // Sistem metriklerini de oku (CPU delta için state'li reader).
         self.sys = Some(self.sys_reader.read());
+        // Process başına tahmini güç (canlı sekme için).
+        self.processes = self.proc_reader.top(15);
+        if self.process_view == ProcessView::LastHour {
+            self.refresh_process_history();
+        }
         // Trend verisini de tazele (SQLite'ten).
         self.refresh_trend();
         self.refresh_pattern();
@@ -171,6 +202,32 @@ impl App {
         self.refresh_pattern();
     }
 
+    /// Compact modu aç/kapat ('c').
+    pub fn toggle_compact(&mut self) {
+        self.compact = !self.compact;
+    }
+
+    /// Process sekmesi görünümünü değiştir: canlı ↔ son-1-saat ('d').
+    pub fn toggle_process_view(&mut self) {
+        self.process_view = match self.process_view {
+            ProcessView::Live => ProcessView::LastHour,
+            ProcessView::LastHour => ProcessView::Live,
+        };
+        if self.process_view == ProcessView::LastHour {
+            self.refresh_process_history();
+        }
+    }
+
+    /// SQLite'ten son 1 saatte ada göre toplu process gücünü yükle.
+    pub fn refresh_process_history(&mut self) {
+        if let Some(store) = &self.store {
+            match store.query_top_processes(3600) {
+                Ok(p) => self.process_history = p,
+                Err(e) => self.last_error = Some(format!("process history: {e:#}")),
+            }
+        }
+    }
+
     /// Belirli bir sekmeye git (zaten oradaysa no-op).
     pub fn goto_tab(&mut self, tab: Tab) {
         if self.tab != tab {
@@ -213,5 +270,9 @@ pub enum Message {
     NextTab,
     /// Pattern eksenini değiştir (saatlik ↔ günlük, 'd').
     TogglePatternAxis,
+    /// Process görünümünü değiştir (canlı ↔ son-1-saat, 'd').
+    ToggleProcessView,
+    /// Compact modu aç/kapat ('c').
+    ToggleCompact,
     Quit,
 }
