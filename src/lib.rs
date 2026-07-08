@@ -1,7 +1,7 @@
-//! Wattea — paylaşılan çekirdek kütüphane.
+//! Wattea — shared core library.
 //!
-//! Hem TUI (`wattea`) hem collector daemon (`wattea-daemon`) tarafından
-//! kullanılan ortak kod: batarya okuma, SQLite depolama, model tipleri.
+//! Common code used by both the TUI (`wattea`) and the collector daemon
+//! (`wattea-daemon`): battery reading, SQLite storage, and shared model types.
 
 pub mod app;
 pub mod battery;
@@ -16,14 +16,14 @@ mod tests;
 
 use std::path::PathBuf;
 
-/// Wattea'nın veri dizini: `~/.local/share/wattea/`.
+/// Wattea data directory: `~/.local/share/wattea/`.
 ///
-/// SQLite DB ve ileride diğer runtime verisi burada tutulur.
+/// Holds the SQLite database and any future runtime artifacts.
 pub fn data_dir() -> Option<PathBuf> {
     dirs::data_dir().map(|d| d.join("wattea"))
 }
 
-/// SQLite veritabanı dosyasının tam yolu.
+/// Full path to the SQLite database file.
 pub fn db_path() -> Option<PathBuf> {
     data_dir().map(|d| d.join("db.sqlite"))
 }

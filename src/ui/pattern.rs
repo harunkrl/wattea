@@ -1,5 +1,5 @@
-//! Pattern sekmesi: saat/gün bazına ortalama %/h deseni. Yoğunluk gradyanı
-//! (yeşil→kırmızı), zirve bar accent_alt, en düşük yeşil, "now" saati ▲ işaretli.
+//! Pattern tab: average %/h pattern by hour/day. Intensity gradient
+//! (green→red), peak bar in accent_alt, lowest in green, the "now" hour marked with ▲.
 
 use ratatui::{
     Frame,
@@ -12,7 +12,7 @@ use ratatui::{
 use crate::app::App;
 use crate::ui::theme::Theme;
 
-/// Pattern sekmesini çizer.
+/// Render the Pattern tab.
 pub fn render(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
     let [chart_area, summary_area] =
         Layout::vertical([Constraint::Fill(1), Constraint::Length(3)]).areas(area);
@@ -54,7 +54,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
         .fold(1.0_f64, f64::max);
     let scale = 100.0;
 
-    // Zirve / en düşük indeksleri (avg_pct_per_hour'a göre).
+    // Peak / lowest indices (by avg_pct_per_hour).
     let peak_idx = app
         .pattern
         .iter()
@@ -76,7 +76,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
         .map(|b| b.hour)
         .unwrap_or(0);
 
-    // Şimdiki saat (UTC kabaca) — saatlik modda "now" ▲ işareti için.
+    // Current hour (roughly UTC) — for the "now" ▲ marker in hourly mode.
     let now_hour = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| ((d.as_secs() / 3600) % 24) as u8)
@@ -133,7 +133,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
     render_summary(app, frame, summary_area, theme);
 }
 
-/// Pattern özeti: bin sayısı, toplam örnek, peak/low saat.
+/// Pattern summary: bin count, total samples, peak/low hour.
 fn render_summary(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
     let (axis_unit, total_bins) = match app.pattern_axis {
         crate::app::PatternAxis::Hourly => ("hour", 24u8),
@@ -186,5 +186,8 @@ fn render_summary(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
             Style::new().fg(theme.ok),
         ));
     }
-    frame.render_widget(Paragraph::new(Line::from(spans)).block(theme.panel("Summary", false)), area);
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).block(theme.panel("Summary", false)),
+        area,
+    );
 }

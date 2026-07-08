@@ -1,4 +1,4 @@
-//! TestBackend ile UI render'ının kırılmadığını doğrular.
+//! Verifies that UI rendering does not break on a TestBackend.
 
 use ratatui::{backend::TestBackend, Terminal};
 
@@ -6,7 +6,7 @@ use crate::app::App;
 use crate::battery::{Battery, BatteryInfo, BatterySample, Status};
 use crate::ui;
 
-/// Sahte (gerçek sysfs gerektirmeyen) bir örnekleme.
+/// A fake sample (requires no real sysfs).
 fn fake_sample() -> BatterySample {
     BatterySample {
         capacity: 57,
@@ -23,11 +23,11 @@ fn fake_sample() -> BatterySample {
 #[test]
 fn metric_computations_are_correct() {
     let s = fake_sample();
-    // %/saat = 17.36 / 50.6 * 100 ≈ 34.3
+    // %/hour = 17.36 / 50.6 * 100 ≈ 34.3
     assert!((s.pct_per_hour().unwrap() - 34.31).abs() < 0.1);
-    // sağlık = 50.6 / 56.0 * 100 ≈ 90.36
+    // health = 50.6 / 56.0 * 100 ≈ 90.36
     assert!((s.health() - 90.36).abs() < 0.1);
-    // şarjda → "time to full" hesaplanır olmalı
+    // charging → "time to full" must be computed
     assert!(s.time_remaining().is_some());
 }
 
@@ -37,7 +37,7 @@ fn discharge_time_to_empty() {
     s.status = Status::Discharging;
     s.power_now = Some(10.0);
     s.energy_now = Some(40.0);
-    // 40 Wh / 10 W = 4 saat
+    // 40 Wh / 10 W = 4 hours
     let dur = s.time_remaining().unwrap();
     assert_eq!(dur.as_secs(), 4 * 3600);
 }
@@ -60,7 +60,7 @@ fn renders_without_panic_on_small_and_large_areas() {
     app.sample = Some(fake_sample());
     app.power_history.extend([5.0, 8.0, 12.0, 6.0, 10.0]);
 
-    // Dar ve geniş alanların ikisinde de kırılmadan çizmeli.
+    // Must render without breaking on both narrow and wide areas.
     for (w, h) in [(80, 24), (120, 40), (60, 20)] {
         let backend = TestBackend::new(w, h);
         let mut term = Terminal::new(backend).unwrap();
@@ -77,14 +77,14 @@ fn pattern_tab_renders_with_and_without_data() {
     app.sample = Some(fake_sample());
     app.tab = Tab::Pattern;
 
-    // 1) Boş pattern (veri yok): kırılmadan çizmeli.
+    // 1) Empty pattern (no data): must render without breaking.
     for (w, h) in [(80, 24), (120, 40)] {
         let backend = TestBackend::new(w, h);
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| ui::view(&app, f)).unwrap();
     }
 
-    // 2) Dolu pattern: 24 saatlik sahte sepetler.
+    // 2) Populated pattern: 24-hour fake bins.
     app.pattern = (0..24)
         .map(|hour| HourlyBin {
             hour,
@@ -108,14 +108,14 @@ fn sessions_tab_renders_with_and_without_data() {
     app.sample = Some(fake_sample());
     app.tab = Tab::Sessions;
 
-    // 1) Boş (oturum yok).
+    // 1) Empty (no sessions).
     for (w, h) in [(80, 24), (120, 40)] {
         let backend = TestBackend::new(w, h);
         let mut term = Terminal::new(backend).unwrap();
         term.draw(|f| ui::view(&app, f)).unwrap();
     }
 
-    // 2) Dolu: 3 sahte oturum.
+    // 2) Populated: 3 fake sessions.
     app.sessions = vec![
         Session {
             start_ts: 1000,
@@ -152,7 +152,7 @@ fn session_metrics_are_correct() {
     use crate::storage::Session;
     let s = Session {
         start_ts: 0,
-        end_ts: 3600, // 1 saat
+        end_ts: 3600, // 1 hour
         start_capacity: 80,
         end_capacity: 70,
         power_sum: 100.0,
@@ -162,7 +162,7 @@ fn session_metrics_are_correct() {
     assert_eq!(s.duration_secs(), 3600);
     // 10% / 1h = 10 %/h
     assert!((s.avg_pct_per_hour().unwrap() - 10.0).abs() < 0.01);
-    // 100W·60 örnek / 60 = 1.67W ortalama
+    // 100W·60 samples / 60 = 1.67W average
     assert!((s.avg_power().unwrap() - 1.667).abs() < 0.01);
 }
 
@@ -175,8 +175,8 @@ fn renders_gracefully_with_no_sample_yet() {
     term.draw(|f| ui::view(&app, f)).unwrap();
 }
 
-/// Responsive audit: tüm 4 sekme, 5 farklı terminal boyutunda kırılmadan
-/// render edilmeli (collapse eşikleri dahil: 60, 68, 80, 100, 120, 140).
+/// Responsive audit: all 5 tabs must render without breaking at 5 different
+/// terminal sizes (including collapse thresholds: 60, 68, 80, 100, 120, 140).
 #[test]
 fn all_tabs_render_across_sizes() {
     use crate::app::Tab;
@@ -187,11 +187,11 @@ fn all_tabs_render_across_sizes() {
     app.sample = Some(fake_sample());
     app.power_history.extend([5.0, 8.0, 12.0, 6.0, 10.0]);
     app.sys = Some(SystemMetrics {
-        cpu_load: Some(72.0), // warn bandı
+        cpu_load: Some(72.0), // warn band
         brightness: Some(80.0),
-        temperature: Some(48.0), // ok bandı
+        temperature: Some(48.0), // ok band
     });
-    // 24 saatlik trend verisi (Trend stacked grafikleri için).
+    // 24-hour trend data (for the Trend stacked charts).
     let base = 1_700_000_000_i64;
     app.trend = (0..8)
         .map(|i| Sample {
@@ -233,7 +233,7 @@ fn all_tabs_render_across_sizes() {
     }
 }
 
-/// Compact mod (default) tüm boyutlarda kırılmadan render olmalı.
+/// Compact mode (default) must render without breaking across sizes.
 #[test]
 fn compact_mode_renders_across_sizes() {
     use crate::system::SystemMetrics;
@@ -245,7 +245,7 @@ fn compact_mode_renders_across_sizes() {
         brightness: Some(80.0),
         temperature: Some(48.0),
     });
-    assert!(app.compact, "compact açılışta default olmalı");
+    assert!(app.compact, "compact must be the default at startup");
     for (w, h) in [(60, 20), (80, 24), (120, 40), (140, 50)] {
         let backend = TestBackend::new(w, h);
         let mut term = Terminal::new(backend).unwrap();

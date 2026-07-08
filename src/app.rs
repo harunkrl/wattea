@@ -1,4 +1,4 @@
-//! Uygulama durumu — Elm Architecture (Model → Message → Update).
+//! Application state — Elm Architecture (Model → Message → Update).
 
 use std::collections::VecDeque;
 use std::time::Instant;
@@ -8,12 +8,12 @@ use crate::process::{ProcessPower, ProcessReader};
 use crate::storage::{Anomaly, HourlyBin, ProcessAgg, Sample, Session, Store};
 use crate::system::{SystemMetrics, SystemReader};
 
-/// Sparkline'da tutulan canlı örnek sayısı (≈ 5 dk @ 1 sn örnekleme).
+/// Number of live samples kept for the sparkline (~5 min at 1s sampling).
 const HISTORY_LEN: usize = 300;
-/// Trend sekmesinde gösterilen pencere: son 24 saat.
+/// Window shown on the Trend tab: the last 24 hours.
 pub const TREND_WINDOW_SECS: u64 = 24 * 3600;
 
-/// Pattern sekmesinin ekseni: günün saati veya haftanın günü.
+/// Pattern tab axis: hour of day or day of week.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PatternAxis {
     Hourly,
@@ -29,25 +29,25 @@ impl PatternAxis {
     }
 }
 
-/// Process sekmesinin görünümü: canlı veya son-1-saat-top (history).
+/// Process tab view: live or last-hour aggregate (history).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessView {
     Live,
     LastHour,
 }
 
-/// Aktif görünüm sekmesi.
+/// Active view tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
-    /// Canlı sysfs paneli.
+    /// Live sysfs panel.
     Live,
-    /// SQLite'ten 24 saatlik history trendi.
+    /// 24-hour history trend from SQLite.
     Trend,
-    /// Saat-bazına / gün-bazına kullanım deseni.
+    /// Usage pattern by hour-of-day / day-of-week.
     Pattern,
-    /// On-battery oturumları (prizden-çek → prize-tak döngüleri).
+    /// On-battery sessions (unplug → plug cycles).
     Sessions,
-    /// Process başına **tahmini** güç tüketimi (canlı).
+    /// Per-process **estimated** power consumption (live).
     Processes,
 }
 
@@ -77,31 +77,31 @@ impl Tab {
 pub struct App {
     pub info: BatteryInfo,
     pub sample: Option<BatterySample>,
-    /// Canlı sistem metrikleri (CPU/parlaklık/sıcaklık).
+    /// Live system metrics (CPU/brightness/temperature).
     pub sys: Option<SystemMetrics>,
     sys_reader: SystemReader,
-    /// Process başına tahmini güç (canlı). Sıralı: yüksek→düşük.
+    /// Per-process estimated power (live). Sorted high → low.
     pub processes: Vec<ProcessPower>,
     proc_reader: ProcessReader,
-    /// Process sekmesi görünümü: canlı ↔ son-1-saat.
+    /// Process tab view: live ↔ last-hour.
     pub process_view: ProcessView,
-    /// Process history: son 1 saatte ada göre toplu tahmini güç.
+    /// Process history: per-name aggregate estimated power over the last hour.
     pub process_history: Vec<ProcessAgg>,
-    /// Son N ölçümün gücü (W) — canlı sparkline için.
+    /// Power (W) of the last N samples — for the live sparkline.
     pub power_history: VecDeque<f64>,
-    /// SQLite history deposu (varsa). Trend sekmesi bunu kullanır.
+    /// SQLite history store (if available). Used by the Trend tab.
     pub store: Option<Store>,
-    /// Son 24 saatin SQLite örnekleri — trend grafiği için.
+    /// Last 24h of SQLite samples — for the trend charts.
     pub trend: Vec<Sample>,
-    /// Desen analizi sepetleri (saatlik veya günlük).
+    /// Pattern-analysis bins (hourly or weekday).
     pub pattern: Vec<HourlyBin>,
     pub pattern_axis: PatternAxis,
-    /// On-battery oturumları (en yeni en üstte).
+    /// On-battery sessions (newest first).
     pub sessions: Vec<Session>,
-    /// Beklenenden yüksek güç tüketen anomaliler (z≥2).
+    /// Anomalies with unexpectedly high power draw (z ≥ 2).
     pub anomalies: Vec<Anomaly>,
     pub tab: Tab,
-    /// Compact mod (btop tarzı yoğun tek-ekran). Açılışta default açık.
+    /// Compact mode (btop-style dense single-screen). Default on at startup.
     pub compact: bool,
     pub last_update: Option<Instant>,
     pub last_error: Option<String>,
@@ -134,7 +134,7 @@ impl App {
         }
     }
 
-    /// sysfs'i oku, durumu güncelle. Başarısız olursa hatayı sakla (UI düşmesin).
+    /// Read sysfs and update state. On failure, store the error (UI must not crash).
     pub fn refresh(&mut self, battery: &Battery) {
         match battery.read() {
             Ok(sample) => {
@@ -150,20 +150,20 @@ impl App {
             }
             Err(e) => self.last_error = Some(format!("{e:#}")),
         }
-        // Sistem metriklerini de oku (CPU delta için state'li reader).
+        // Also read system metrics (stateful reader for the CPU delta).
         self.sys = Some(self.sys_reader.read());
-        // Process başına tahmini güç (canlı sekme için).
+        // Per-process estimated power (for the live tab).
         self.processes = self.proc_reader.top(15);
         if self.process_view == ProcessView::LastHour {
             self.refresh_process_history();
         }
-        // Trend verisini de tazele (SQLite'ten).
+        // Refresh trend data too (from SQLite).
         self.refresh_trend();
         self.refresh_pattern();
         self.refresh_sessions();
     }
 
-    /// SQLite history'sinden son 24 saati yükle.
+    /// Load the last 24 hours from the SQLite history.
     pub fn refresh_trend(&mut self) {
         if let Some(store) = &self.store {
             match store.query_since(TREND_WINDOW_SECS) {
@@ -173,7 +173,7 @@ impl App {
         }
     }
 
-    /// SQLite history'sinden desen sepetlerini yükle.
+    /// Load pattern bins from the SQLite history.
     pub fn refresh_pattern(&mut self) {
         if let Some(store) = &self.store {
             let res = match self.pattern_axis {
@@ -187,7 +187,7 @@ impl App {
         }
     }
 
-    /// Sonraki sekmeye geç.
+    /// Advance to the next tab.
     pub fn next_tab(&mut self) {
         self.tab = self.tab.next();
         self.refresh_trend();
@@ -196,18 +196,18 @@ impl App {
         self.refresh_anomalies();
     }
 
-    /// Pattern eksenini değiştir (saatlik ↔ günlük).
+    /// Switch the pattern axis (hourly ↔ weekday).
     pub fn toggle_pattern_axis(&mut self) {
         self.pattern_axis = self.pattern_axis.toggle();
         self.refresh_pattern();
     }
 
-    /// Compact modu aç/kapat ('c').
+    /// Toggle compact mode ('c').
     pub fn toggle_compact(&mut self) {
         self.compact = !self.compact;
     }
 
-    /// Process sekmesi görünümünü değiştir: canlı ↔ son-1-saat ('d').
+    /// Switch the process tab view: live ↔ last-hour ('d').
     pub fn toggle_process_view(&mut self) {
         self.process_view = match self.process_view {
             ProcessView::Live => ProcessView::LastHour,
@@ -218,7 +218,7 @@ impl App {
         }
     }
 
-    /// SQLite'ten son 1 saatte ada göre toplu process gücünü yükle.
+    /// Load per-name aggregate process power for the last hour from SQLite.
     pub fn refresh_process_history(&mut self) {
         if let Some(store) = &self.store {
             match store.query_top_processes(3600) {
@@ -228,7 +228,7 @@ impl App {
         }
     }
 
-    /// Belirli bir sekmeye git (zaten oradaysa no-op).
+    /// Go to a specific tab (no-op if already there).
     pub fn goto_tab(&mut self, tab: Tab) {
         if self.tab != tab {
             self.tab = tab;
@@ -239,10 +239,10 @@ impl App {
         }
     }
 
-    /// On-battery oturumlarını yükle.
+    /// Load on-battery sessions.
     pub fn refresh_sessions(&mut self) {
         if let Some(store) = &self.store {
-            // 10 dk'dan büyük boşluk yeni oturum sayılır.
+            // A gap larger than 10 minutes starts a new session.
             match store.query_sessions(600) {
                 Ok(s) => self.sessions = s,
                 Err(e) => self.last_error = Some(format!("sessions: {e:#}")),
@@ -250,7 +250,7 @@ impl App {
         }
     }
 
-    /// Anomali tespiti: z-skoru ≥ 2 olan güç spike'ları.
+    /// Anomaly detection: power spikes with z-score ≥ 2.
     pub fn refresh_anomalies(&mut self) {
         if let Some(store) = &self.store {
             match store.query_anomalies(2.0) {
@@ -261,18 +261,18 @@ impl App {
     }
 }
 
-/// Klavye/tick olaylarının uygulamaya ilettiği mesaj.
+/// A message delivered to the app by keyboard/tick events.
 #[derive(Debug)]
 pub enum Message {
-    /// Veriyi yenile (manuel 'r' veya otomatik tick).
+    /// Refresh data (manual 'r' or automatic tick).
     Refresh,
-    /// Sekme değiştir (Tab).
+    /// Change tab (Tab).
     NextTab,
-    /// Pattern eksenini değiştir (saatlik ↔ günlük, 'd').
+    /// Switch pattern axis (hourly ↔ weekday, 'd').
     TogglePatternAxis,
-    /// Process görünümünü değiştir (canlı ↔ son-1-saat, 'd').
+    /// Switch process view (live ↔ last-hour, 'd').
     ToggleProcessView,
-    /// Compact modu aç/kapat ('c').
+    /// Toggle compact mode ('c').
     ToggleCompact,
     Quit,
 }

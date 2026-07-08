@@ -1,13 +1,13 @@
-//! sysfs batarya okuma.
+//! sysfs battery reading.
 //!
-//! `/sys/class/power_supply/<BAT*>/` altındaki dosyalardan tüm metrikleri
-//! okur. Dosyalar eksik olabilir; bu yüzden her alan `Option`'dır ve
-//! `read_*` yardımcıları başarısız olursa sessizce `None` döner.
+//! Reads all metrics from the files under `/sys/class/power_supply/<BAT*>/`.
+//! Files may be missing, so every field is `Option` and the `read_*` helpers
+//! silently return `None` on failure.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// sysfs'ten okunan şarj durumu.
+/// Charging state read from sysfs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
     Charging,
@@ -28,7 +28,7 @@ impl Status {
         }
     }
 
-    /// Tek harf rozet (header/rozet gösterimi için).
+    /// Single-glyph badge (for header/badge display).
     pub fn glyph(self) -> &'static str {
         match self {
             Self::Charging => "⚡",
@@ -50,7 +50,7 @@ impl Status {
     }
 }
 
-/// Statik (değişmeyen) batarya kimliği — açılışta bir kez okunur.
+/// Static (unchanging) battery identity — read once at startup.
 #[derive(Debug, Clone)]
 pub struct BatteryInfo {
     pub name: String,
@@ -59,21 +59,21 @@ pub struct BatteryInfo {
     pub technology: Option<String>,
 }
 
-/// Tek bir örnekleme (sysfs okumasının sonucu).
+/// A single sample (the result of a sysfs read).
 #[derive(Debug, Clone)]
 pub struct BatterySample {
     pub capacity: u8, // % (0–100)
     pub status: Status,
-    pub power_now: Option<f64>, // W (anlık güç; şarjda da boşalmada da pozitif)
+    pub power_now: Option<f64>, // W (instantaneous power; positive whether charging or discharging)
     pub voltage: Option<f64>,   // V
-    pub energy_now: Option<f64>, // Wh (kalan)
-    pub energy_full: f64,       // Wh (güncel tam kapasite)
-    pub energy_full_design: f64, // Wh (fabrika tasarımı)
-    pub cycle_count: Option<u32>, // döngü sayısı
+    pub energy_now: Option<f64>, // Wh (remaining)
+    pub energy_full: f64,       // Wh (current full capacity)
+    pub energy_full_design: f64, // Wh (factory design capacity)
+    pub cycle_count: Option<u32>, // cycle count
 }
 
 impl BatterySample {
-    /// Saat başına % kaç tüketim/akış: power(W) / energy_full(Wh) * 100.
+    /// Percent flow per hour: power(W) / energy_full(Wh) * 100.
     pub fn pct_per_hour(&self) -> Option<f64> {
         let p = self.power_now?;
         if p <= 0.0 || self.energy_full <= 0.0 {
@@ -82,7 +82,7 @@ impl BatterySample {
         Some(p / self.energy_full * 100.0)
     }
 
-    /// Tahmini kalan süre. Boşalmada → bitiş, şarjda → dolma süresi.
+    /// Estimated time remaining. Discharging → time to empty; charging → time to full.
     pub fn time_remaining(&self) -> Option<Duration> {
         let p = self.power_now?;
         if p <= 0.0 {
@@ -96,7 +96,7 @@ impl BatterySample {
         Some(Duration::from_secs_f64(hours * 3600.0))
     }
 
-    /// Sağlık: güncel tam kapasite / tasarım kapasitesi.
+    /// Health: current full capacity / design capacity.
     pub fn health(&self) -> f64 {
         if self.energy_full_design <= 0.0 {
             return 0.0;
@@ -105,14 +105,14 @@ impl BatterySample {
     }
 }
 
-/// sysfs batarya kaynak yöneticisi. İlk `Battery` tipini otomatik bulur.
+/// sysfs battery resource handle. Auto-detects the first `Battery` type.
 pub struct Battery {
     pub(crate) dir: PathBuf,
     pub info: BatteryInfo,
 }
 
 impl Battery {
-    /// İlk bataryayı `/sys/class/power_supply/` altında bul.
+    /// Find the first battery under `/sys/class/power_supply/`.
     pub fn detect() -> color_eyre::Result<Self> {
         let base = Path::new("/sys/class/power_supply");
         for entry in std::fs::read_dir(base)? {
@@ -128,16 +128,16 @@ impl Battery {
                 return Ok(Self { dir: path, info });
             }
         }
-        color_eyre::eyre::bail!("batarya bulunamadı: /sys/class/power_supply/")
+        color_eyre::eyre::bail!("no battery found under /sys/class/power_supply/")
     }
 
-    /// Tüm canlı metrikleri bir kez oku.
+    /// Read all live metrics once.
     pub fn read(&self) -> color_eyre::Result<BatterySample> {
         let capacity = read_u(&self.dir.join("capacity"), 1000).min(100) as u8;
         let status = read_str(&self.dir.join("status"));
         let status = Status::from_str(&status);
 
-        // Güç: power_now (µW) tercih et; yoksa current_now (µA) * voltage (V).
+        // Power: prefer power_now (µW); fall back to current_now (µA) * voltage (V).
         let power_now = read_micro(&self.dir.join("power_now")).or_else(|| {
             let current = read_micro(&self.dir.join("current_now"))?;
             let voltage = read_micro(&self.dir.join("voltage_now"))?;
@@ -146,7 +146,7 @@ impl Battery {
 
         let voltage = read_micro(&self.dir.join("voltage_now"));
 
-        // Enerji: energy_* (µWh) tercih et; yoksa charge_* (µAh) * V'den Wh türet.
+        // Energy: prefer energy_* (µWh); fall back to charge_* (µAh) * V for Wh.
         let energy_now = read_micro(&self.dir.join("energy_now")).or_else(|| {
             let charge = read_micro(&self.dir.join("charge_now"))?;
             Some(charge * voltage.unwrap_or(0.0) / 1_000_000.0)
@@ -179,7 +179,7 @@ impl Battery {
     }
 }
 
-// --- yardımcı dosya okuyucular ------------------------------------------------
+// --- file reader helpers ------------------------------------------------------
 
 fn read_str(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_default()
@@ -195,7 +195,7 @@ fn read_str_opt(path: &Path) -> Option<String> {
     }
 }
 
-/// Mikro-birimli dosyayı (µW, µV, µWh, µA) gerçek birime çevir (÷1e6).
+/// Convert a micro-unit file (µW, µV, µWh, µA) to its real unit (÷1e6).
 fn read_micro(path: &Path) -> Option<f64> {
     let raw = std::fs::read_to_string(path).ok()?.trim().to_string();
     let v: f64 = raw.parse().ok()?;

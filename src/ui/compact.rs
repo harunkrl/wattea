@@ -1,7 +1,7 @@
-//! Compact mod: btop tarzı yoğun tek-ekran dashboard. Açılışta default.
+//! Compact mode: a btop-style dense single-screen dashboard. Default at startup.
 //!
-//! Şarj + hızlı metrikler (üst şerit), güç grafiği + process listesi (yan yana),
-//! sistem mini-bar'ları (alt) — hepsi tek ekranda.
+//! Charge + quick metrics (top strip), power chart + process list (side by side),
+//! system mini-bars (bottom) — all on a single screen.
 
 use ratatui::{
     layout::{Constraint, Layout, Rect},
@@ -16,7 +16,7 @@ use crate::battery::Status;
 use crate::ui::theme::{Theme, CPU_DANGER, CPU_WARN, TEMP_DANGER, TEMP_WARN};
 use crate::ui::widgets;
 
-/// Compact dashboard'u çizer.
+/// Render the compact dashboard.
 pub fn render(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
     let [strip, main, sys] = Layout::vertical([
         Constraint::Length(3),
@@ -33,7 +33,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
     render_sys_strip(app, frame, sys, theme);
 }
 
-/// Üst şerit: şarj çubuğu + % + hızlı metrikler tek satırda.
+/// Top strip: charge bar + % + quick metrics on a single line.
 fn render_metric_strip(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
     let block = theme.panel("Charge", true);
     let inner = block.inner(area);
@@ -49,7 +49,7 @@ fn render_metric_strip(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) 
     let charging = s.status == Status::Charging;
     let color = theme.charge_color(s.capacity, charging);
 
-    // [şarj çubuğu + %] | [inline metrikler]
+    // [charge bar + %] | [inline metrics]
     let [bar_cell, rest] =
         Layout::horizontal([Constraint::Length(20), Constraint::Fill(1)]).areas(inner);
     let [bar_area, pct_area] =
@@ -71,7 +71,7 @@ fn render_metric_strip(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) 
         pct_area,
     );
 
-    // Inline metrikler: status · rate · power · voltage · health · temp · cycles
+    // Inline metrics: status · rate · power · voltage · health · temp · cycles
     let rate = s.pct_per_hour();
     let mut spans = vec![
         Span::raw("  "),
@@ -139,7 +139,7 @@ fn push_metric(spans: &mut Vec<Span>, theme: &Theme, label: &str, value: Option<
     spans.push(Span::raw("  "));
 }
 
-/// Güç çizgi grafiği (canlı, Trend ile tutarlı Braille).
+/// Power line chart (live, consistent with Trend using Braille).
 fn render_power(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
     let now = app.power_history.back().copied();
     let peak = app.power_history.iter().copied().fold(0.0_f64, f64::max);
@@ -198,7 +198,7 @@ fn render_power(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
     frame.render_widget(chart, inner);
 }
 
-/// Process listesi (compact): name + est_w + cpu%.
+/// Process list (compact): name + est_w + cpu%.
 fn render_procs(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
     let block = theme.panel("Top processes · est W", false);
     let inner = block.inner(area);
@@ -240,7 +240,7 @@ fn render_procs(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
     frame.render_widget(table, inner);
 }
 
-/// Alt şerit: sistem mini-bar'ları (CPU / parlaklık / sıcaklık) tek satırda.
+/// Bottom strip: system mini-bars (CPU / brightness / temperature) on a single line.
 fn render_sys_strip(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
     let block = theme.panel("System", false);
     let inner = block.inner(area);
@@ -291,7 +291,7 @@ fn add_bar(
     }
 }
 
-/// Uzun metni kırp.
+/// Truncate long text.
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()

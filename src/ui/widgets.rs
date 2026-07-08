@@ -1,8 +1,8 @@
-//! Yeniden kullanılabilir custom/composite widget'lar.
+//! Reusable custom/composite widgets.
 //!
-//! Tüm sekmeler ortak kullanır: `panel`, `tab_bar` (native Tabs sarmalayıcı).
-//! Custom render widget'ları (`BatteryCell`) ve composite
-//! yardımcılar (`metric_card`, `mini_bar`) sonraki görevlerde eklenir.
+//! Shared by all tabs: `panel`, `tab_bar` (native Tabs wrapper).
+//! Custom render widgets (`BatteryCell`) and composite helpers
+//! (`metric_card`, `mini_bar`) are used across the dashboard.
 
 use ratatui::{
     buffer::Buffer,
@@ -14,19 +14,19 @@ use ratatui::{
 
 use crate::ui::theme::Theme;
 
-/// Tutarlı panel bloğu (theme.panel etrafında ince sarmalayıcı).
+/// A consistent panel block (thin wrapper around theme.panel).
 ///
-/// Tek giriş noktası: ileride ek panel mantığı (header/footer vb.) buraya eklenir.
+/// Single entry point: any future panel logic (header/footer etc.) goes here.
 pub fn panel(theme: &Theme, title: &str, focused: bool) -> Block<'static> {
     theme.panel(title, focused)
 }
 
-/// Aktif sekmeli native Tabs widget'ı.
+/// Active tabbed native Tabs widget.
 ///
-/// `active` → accent zemin/siyah önplan/bold; pasifler dim.
+/// `active` → accent background/black foreground/bold; inactive → dim.
 pub fn tab_bar(titles: &[&str], active: usize, theme: &Theme) -> Tabs<'static> {
-    // Her başlığı owned String'e çevir → Line<'static> → Tabs<'static>.
-    // (Line::from(&str) ödünç alır; bizim title'larımız fonksiyon çıkışında yaşamaz.)
+    // Convert each title to an owned String → Line<'static> → Tabs<'static>.
+    // (Line::from(&str) borrows; our titles do not outlive the function.)
     let highlights = titles
         .iter()
         .map(|t| Line::from((*t).to_string()))
@@ -43,8 +43,8 @@ pub fn tab_bar(titles: &[&str], active: usize, theme: &Theme) -> Tabs<'static> {
         .divider(ratatui::symbols::DOT)
 }
 
-/// Yatay doluluk çubuğu (`█░` blok karakterleriyle).
-/// Soldan sağa capacity% kadar dolar; renk `theme.charge_color` ile.
+/// Horizontal charge bar (using `█░` block characters).
+/// Fills left-to-right up to capacity%; color comes from `theme.charge_color`.
 pub struct BatteryCell<'a> {
     pub capacity: u8, // 0..=100
     pub charging: bool,
@@ -55,7 +55,7 @@ impl Widget for BatteryCell<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let fill = self.theme.charge_color(self.capacity, self.charging);
         let total = area.width as usize;
-        // Doluluk soldan sağa: capacity% kadar sütun dolu.
+        // Fill left-to-right: capacity% worth of columns filled.
         let filled_cols = ((self.capacity as u32 * area.width as u32) / 100) as usize;
         for x in 0..total {
             let is_filled = x < filled_cols;
@@ -69,9 +69,9 @@ impl Widget for BatteryCell<'_> {
     }
 }
 
-/// İstatistik kartı: panel title=label (etiket border başlığında),
-/// içerik = büyük değer + opsiyonel mini-bar. Etiket tekrarı YOK.
-/// Yükseklik ihtiyacı: border(2) + value(1) [+ bar(1)] = 3-4 satır.
+/// Statistics card: panel title=label (label in the border title),
+/// content = large value + optional mini-bar. NO label duplication.
+/// Height requirement: border(2) + value(1) [+ bar(1)] = 3-4 lines.
 pub fn metric_card(
     theme: &Theme,
     _label: &str,
@@ -89,8 +89,8 @@ pub fn metric_card(
     Paragraph::new(lines)
 }
 
-/// Tek satırlık etiketli yatay bar (label + █/░ + pct). MiniBar widget değil,
-/// bir Line döndürür — metrik listelerinde satır olarak kullanılır.
+/// A single-line labeled horizontal bar (label + █/░ + pct). Not a MiniBar
+/// widget but a returned Line — used as a row in metric lists.
 pub fn mini_bar(theme: &Theme, label: &str, pct: f64, color: Color) -> Line<'static> {
     let mut spans = vec![Span::styled(
         format!("{label:<8} "),
@@ -107,15 +107,16 @@ pub fn mini_bar_spans(theme: &Theme, pct: f64, color: Color) -> Vec<Span<'static
     for i in 0..width {
         s.push(if i < filled { '█' } else { '░' });
     }
-    // theme burada kullanılmasa da imzada tutulduk: ileride zemin rengi vb. için.
+    // theme is not used here but kept in the signature: for future background color etc.
     let _ = theme;
     vec![Span::styled(s, Style::default().fg(color))]
 }
 
-/// Marka + canlı saat + anomali rozetli üst başlık bloğu.
+/// Top header block with brand + live clock + anomaly badge.
 ///
-/// `pulse` SystemTime saniye paritesinden gelir (binary değişikliği gerekmez,
-/// `view()` imzası korunur). Anomali varsa rozet accent_alt ile yanıp söner.
+/// `pulse` comes from the SystemTime second parity (no binary change needed,
+/// the `view()` signature is preserved). When there are anomalies the badge
+/// pulses with accent_alt.
 pub fn branded_header<'a>(theme: &'a Theme, anomaly_count: usize) -> Block<'a> {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -124,7 +125,7 @@ pub fn branded_header<'a>(theme: &'a Theme, anomaly_count: usize) -> Block<'a> {
     let pulse = secs.is_multiple_of(2);
     let clock = format!("{:02}:{:02}", (secs % 86400) / 3600, (secs % 3600) / 60);
 
-    // Anomali rozet stili (pulse'a göre).
+    // Anomaly badge style (based on pulse).
     let badge = if pulse {
         Style::default()
             .fg(theme.bg)
@@ -136,8 +137,8 @@ pub fn branded_header<'a>(theme: &'a Theme, anomaly_count: usize) -> Block<'a> {
             .add_modifier(Modifier::BOLD)
     };
 
-    // Tek satırda birleştir: marka (sol) + saat/rozet (sağ). Borders::BOTTOM
-    // body'den ayırır; title border'a değil hemen üstündeki satıra yerleşir.
+    // Combine in a single line: brand (left) + clock/badge (right). Borders::BOTTOM
+    // separates from the body; the title sits on the line just above the border.
     let mut title_spans: Vec<Span> = vec![
         Span::raw(" "),
         Span::styled(
@@ -152,7 +153,7 @@ pub fn branded_header<'a>(theme: &'a Theme, anomaly_count: usize) -> Block<'a> {
             Style::default().fg(theme.dim),
         ),
     ];
-    // Sağ tarafı sağa yasla: saat + anomali rozeti.
+    // Right-align the right side: clock + anomaly badge.
     let pad = " ".repeat(2);
     title_spans.push(Span::raw(pad));
     title_spans.push(Span::styled(clock, Style::default().fg(theme.fg)));
@@ -185,7 +186,7 @@ mod tests {
 
     #[test]
     fn battery_cell_fill_proportion_matches_capacity() {
-        // 50% doluluk, 4 geniş alan → soldan 2 sütun "█", sağ 2 "░".
+        // 50% fill, a 4-wide area → 2 columns "█" from the left, 2 "░" on the right.
         let theme = Theme::electric();
         let mut term = Terminal::new(TestBackend::new(8, 2)).unwrap();
         term.draw(|f| {
@@ -200,7 +201,7 @@ mod tests {
         })
         .unwrap();
         let view = term.backend().buffer().content().to_vec();
-        // (0,0) dolu (█), (2,0) boş (░) olmalı.
+        // (0,0) filled (█), (2,0) empty (░).
         assert_eq!(view[0].symbol(), "█");
         assert_eq!(view[2].symbol(), "░");
     }
@@ -227,9 +228,9 @@ mod tests {
     #[test]
     fn mini_bar_fill_count_matches_pct() {
         let theme = Theme::electric();
-        // 50% → 10'lik bar → 5 dolu.
+        // 50% → 10-wide bar → 5 filled.
         let line = mini_bar(&theme, "CPU", 50.0, theme.ok);
-        // spans[0] etiket, spans[1] bar.
+        // spans[0] label, spans[1] bar.
         let filled = line.spans[1].content.chars().filter(|c| *c == '█').count();
         assert_eq!(filled, 5);
     }
@@ -253,7 +254,7 @@ mod tests {
     fn branded_header_renders_with_and_without_anomalies() {
         let theme = Theme::electric();
         let mut term = Terminal::new(TestBackend::new(80, 4)).unwrap();
-        // Anomali yok.
+        // No anomalies.
         term.draw(|f| {
             f.render_widget(
                 branded_header(&theme, 0),
@@ -261,7 +262,7 @@ mod tests {
             );
         })
         .unwrap();
-        // Anomali var.
+        // With anomalies.
         term.draw(|f| {
             f.render_widget(
                 branded_header(&theme, 3),

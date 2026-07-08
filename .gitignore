@@ -18,8 +18,8 @@ db.sqlite*
 *~
 
 # Local-only notes / research (not part of the project)
-ARASTIRMA_RAPORU.md
-*.rapor.md
+RESEARCH.md
+*.report.md
 NOTES.md
 
 # Visual brainstorming companion (local mockups)

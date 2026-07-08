@@ -1,10 +1,10 @@
-//! Render — Gauge (doluluk), Sparkline (güç trendi), metrikler.
+//! Rendering — Gauge (charge level), Sparkline (power trend), metrics.
 //!
-//! Lib crate'in parçasıdır, böylece render testleri (TestBackend) çalışabilir.
+//! Part of the lib crate so render tests (TestBackend) can run.
 //!
-//! Bu modül kökü (mod.rs) yalnızca dispatch + header + help + paylaşılan
-//! yardımcıları içerir. Sekme çizimleri `live`, `trend`, `pattern`,
-//! `sessions` alt modüllerinde; özel widget'lar `widgets` modülündedir.
+//! This module root (mod.rs) holds only dispatch + header + help + shared
+//! helpers. Tab drawing lives in the `live`, `trend`, `pattern`, `sessions`
+//! submodules; custom widgets are in the `widgets` module.
 
 pub mod compact;
 pub mod live;
@@ -27,7 +27,7 @@ use ratatui::{
 
 use crate::app::App;
 
-/// Ana görünüm: sekme seçimine göre ilgili paneli çizer.
+/// Main view: draws the relevant panel based on the active tab.
 pub fn view(app: &App, frame: &mut Frame) {
     let theme = Theme::electric();
     let area = frame.area();
@@ -81,21 +81,31 @@ fn render_help(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
         }
         spans.push(Span::raw(" "));
     }
-    spans.push(Span::styled(" Tab ", Style::default().fg(theme.accent).bold()));
+    spans.push(Span::styled(
+        " Tab ",
+        Style::default().fg(theme.accent).bold(),
+    ));
     spans.push(Span::styled("switch ", Style::default().fg(theme.dim)));
-    spans.push(Span::styled(" c ", Style::default().fg(theme.accent).bold()));
-    spans.push(
-        Span::styled(
-            if app.compact { "tabs " } else { "compact " },
-            Style::default().fg(theme.dim),
-        ),
-    );
+    spans.push(Span::styled(
+        " c ",
+        Style::default().fg(theme.accent).bold(),
+    ));
+    spans.push(Span::styled(
+        if app.compact { "tabs " } else { "compact " },
+        Style::default().fg(theme.dim),
+    ));
     if app.tab == crate::app::Tab::Pattern {
-        spans.push(Span::styled(" d ", Style::default().fg(theme.accent).bold()));
+        spans.push(Span::styled(
+            " d ",
+            Style::default().fg(theme.accent).bold(),
+        ));
         spans.push(Span::styled("hour/day ", Style::default().fg(theme.dim)));
     }
     if app.tab == crate::app::Tab::Processes {
-        spans.push(Span::styled(" d ", Style::default().fg(theme.accent).bold()));
+        spans.push(Span::styled(
+            " d ",
+            Style::default().fg(theme.accent).bold(),
+        ));
         spans.push(Span::styled(
             if app.process_view == crate::app::ProcessView::LastHour {
                 "live "
@@ -105,15 +115,21 @@ fn render_help(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
             Style::default().fg(theme.dim),
         ));
     }
-    spans.push(Span::styled(" r ", Style::default().fg(theme.accent).bold()));
+    spans.push(Span::styled(
+        " r ",
+        Style::default().fg(theme.accent).bold(),
+    ));
     spans.push(Span::styled("refresh ", Style::default().fg(theme.dim)));
-    spans.push(Span::styled(" q ", Style::default().fg(theme.accent).bold()));
+    spans.push(Span::styled(
+        " q ",
+        Style::default().fg(theme.accent).bold(),
+    ));
     spans.push(Span::styled("quit ", Style::default().fg(theme.dim)));
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-/// Option<f64> → "<değer> <birim>" (None → "—").
-/// Live ve Trend sekmeleri ortak kullanır → pub(super).
+/// Format an Option<f64> as "<value> <unit>" (None → "—").
+/// Shared by the Live and Trend tabs → pub(super).
 pub(super) fn opt_fmt(v: Option<f64>, unit: &str, prec: usize) -> String {
     match v {
         Some(x) => format!("{x:.*} {unit}", prec),

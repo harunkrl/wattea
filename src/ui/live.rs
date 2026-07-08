@@ -1,5 +1,5 @@
-//! Live sekmesi: hero (BatteryCell + % + hız) + 2×3 metrik ızgarası +
-//! geniş güç çizgi grafiği. Dar terminallerde sütunlar dikey istiflenir.
+//! Live tab: hero (BatteryCell + % + rate) + 2×3 metric grid +
+//! a wide power line chart. On narrow terminals the columns stack vertically.
 
 use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
@@ -16,9 +16,9 @@ use crate::ui::widgets;
 
 use super::opt_fmt;
 
-/// Live sekmesini çizer.
+/// Render the Live tab.
 pub fn render(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
-    // Dar terminallerde sütunları dikey istifle (70 kolon altı).
+    // On narrow terminals, stack the columns vertically (below 70 columns).
     let wide = area.width >= 70;
     let [hero, right] = if wide {
         Layout::horizontal([Constraint::Percentage(38), Constraint::Fill(1)]).areas(area)
@@ -27,7 +27,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
     };
 
     render_hero(app, frame, hero, theme);
-    // grid: 2 satır × kart. spark: Fill → hero ile aynı yükseklikte bitir.
+    // grid: 2 rows × cards. spark: Fill → ends at the same height as the hero.
     let [grid_area, spark_area] =
         Layout::vertical([Constraint::Length(10), Constraint::Fill(1)]).areas(right);
     render_metric_grid(app, frame, grid_area, theme);
@@ -47,14 +47,14 @@ fn render_hero(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
     let charging = s.status == Status::Charging;
     let color = theme.charge_color(s.capacity, charging);
 
-    // İçerik: border'dan +1 sol/sağ padding (yapışıklığı önler).
+    // Content: +1 left/right padding from the border (avoids crowding).
     let pad = Rect {
         x: inner.x + 1,
         y: inner.y,
         width: inner.width.saturating_sub(2),
         height: inner.height,
     };
-    // [üst boşluk][bar+% (2 satır)][status][ara boşluk][info paneli]
+    // [top gap][bar+% (2 rows)][status][gap][info panel]
     let [_, bar_row, status_row, _, info_area] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(2),
@@ -64,7 +64,7 @@ fn render_hero(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
     ])
     .areas(pad);
 
-    // Kalın batarya çubuğu (2 satır) + büyük % (sağda, dikey ortalanmış).
+    // Thick battery bar (2 rows) + large % (on the right, vertically centered).
     let [bar_area, pct_area] =
         Layout::horizontal([Constraint::Fill(1), Constraint::Length(7)]).areas(bar_row);
     frame.render_widget(
@@ -84,7 +84,7 @@ fn render_hero(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
         pct_area,
     );
 
-    // Status satırı (ikon + etiket).
+    // Status row (icon + label).
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::raw(" "),
@@ -96,7 +96,7 @@ fn render_hero(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
         status_row,
     );
 
-    // Info paneli: label:value satırları (normal aralık, renk kodlu).
+    // Info panel: label:value rows (regular spacing, color-coded).
     let rate = s.pct_per_hour();
     let rate_str = match rate {
         Some(r) => format!("{r:+.1} %/h"),
@@ -138,7 +138,7 @@ fn render_hero(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
         info_line(theme, "Time", opt_dur(s.time_remaining()), theme.accent),
     ];
 
-    // Korelasyon notu (spec §7.3): deşarj + CPU yüksekse ipucu.
+    // Correlation note (spec §7.3): when discharging + high CPU, show a hint.
     if s.status == Status::Discharging
         && app
             .sys
@@ -158,7 +158,7 @@ fn render_hero(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
     frame.render_widget(Paragraph::new(info), info_area);
 }
 
-/// `Label   value` satırı: etiket dim (sabit genişlik), değer renkli.
+/// A `Label   value` row: dim label (fixed width), colored value.
 fn info_line(theme: &Theme, label: &str, value: String, color: Color) -> Line<'static> {
     Line::from(vec![
         Span::raw(" "),
@@ -177,8 +177,8 @@ fn render_metric_grid(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
     };
     let sys = app.sys.as_ref();
 
-    // Öncelik sırasıyla kartlar: (label, value, color, Option<bar_pct>).
-    // 2 sütun modunda (rows*cols=4) en kritik 4 korunur.
+    // Cards in priority order: (label, value, color, Option<bar_pct>).
+    // In 2-column mode (rows*cols=4) the 4 most critical are kept.
     let health = s.health();
     let cards: Vec<(&str, String, Color, Option<f64>)> = vec![
         (
@@ -208,7 +208,7 @@ fn render_metric_grid(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
         ("Time", opt_dur(s.time_remaining()), theme.fg, None),
     ];
 
-    // Sağ sütun yeterince genişse 3 sütun (6 kart), yoksa 2 sütun (4 kart).
+    // 3 columns (6 cards) when the right column is wide enough, else 2 columns (4 cards).
     let cols = if area.width >= 48 { 3 } else { 2 };
     let rows = 2usize;
     let take = rows * cols;
@@ -221,7 +221,7 @@ fn render_metric_grid(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
                 break;
             }
             let (label, value, color, bar) = &cards[idx];
-            // Önce border, sonra içeriği dikey+yatay ortala (border'a boşluk bırak).
+            // Border first, then center the content vertically+horizontally (with padding from the border).
             let block = theme.panel(label, false);
             let inner = block.inner(cells[c]);
             frame.render_widget(block, cells[c]);
@@ -232,7 +232,7 @@ fn render_metric_grid(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
                 height: content_h,
                 ..inner
             };
-            // Değer: yatay ortalanmış, büyük.
+            // Value: horizontally centered, large.
             frame.render_widget(
                 Paragraph::new(Line::from(vec![Span::styled(
                     value.clone(),
@@ -241,7 +241,7 @@ fn render_metric_grid(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
                 .alignment(Alignment::Center),
                 content_area,
             );
-            // Bar (varsa): değerin altında, yatay ortalanmış.
+            // Bar (if any): below the value, horizontally centered.
             if let Some(pct) = bar {
                 let bar_area = Rect {
                     y: cy + 1,
@@ -259,11 +259,11 @@ fn render_metric_grid(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
 }
 
 fn render_spark(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
-    // Trend ile tutarlı: Braille çizgi grafiği (bar sparkline değil).
+    // Consistent with Trend: a Braille line chart (not a bar sparkline).
     let now = app.power_history.back().copied();
     let peak = app.power_history.iter().copied().fold(0.0_f64, f64::max);
 
-    // Başlık: sol "Power draw · last 5 min (W)" + sağ now/peak rozeti.
+    // Title: left "Power draw · last 5 min (W)" + right now/peak badge.
     let block = theme.panel("Power draw · last 5 min (W)", false).title_top(
         Line::from(vec![
             Span::raw(" "),
@@ -279,7 +279,7 @@ fn render_spark(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
         ])
         .right_aligned(),
     );
-    // Grafik içeriğini border'dan biraz uzaklaştır (padding).
+    // Pad the chart content away from the border.
     let inner = Rect {
         x: block.inner(area).x + 1,
         y: block.inner(area).y,
@@ -299,7 +299,7 @@ fn render_spark(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
         .enumerate()
         .map(|(i, w)| (i as f64, *w))
         .collect();
-    let y_max = peak.max(5.0); // en az 5W ölçek, düz çizgiyi önle
+    let y_max = peak.max(5.0); // scale to at least 5W to avoid a flat line
 
     let chart = Chart::new(vec![Dataset::default()
         .marker(ratatui::symbols::Marker::Braille)
@@ -321,7 +321,7 @@ fn render_spark(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
     frame.render_widget(chart, inner);
 }
 
-/// Option<Duration> → "Hh MMm" (None → "—"). (live-only yardımcı.)
+/// Format an Option<Duration> as "Hh MMm" (None → "—"). (live-only helper.)
 fn opt_dur(d: Option<std::time::Duration>) -> String {
     match d {
         Some(d) => {

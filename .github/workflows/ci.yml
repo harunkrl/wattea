@@ -8,7 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # rusqlite "bundled" → SQLite'i kendisi derler, sistem libsqlite3 gerekmez.
+  # rusqlite "bundled" → compiles SQLite itself, no system libsqlite3 needed.
   RUSTFLAGS: "-D warnings"
 
 jobs:
@@ -42,8 +42,8 @@ jobs:
       - name: cargo test
         run: cargo test --all
         env:
-          # Testler /proc/stat, /sys okumaz (hepsi in-memory/bench); yine de
-          # deterministik TZ için sabitliyoruz.
+          # Tests do not read /proc/stat or /sys (all in-memory/bench); still,
+          # pin a fixed TZ for determinism.
           TZ: UTC
 
   build-release:

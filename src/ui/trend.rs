@@ -1,6 +1,6 @@
-//! Trend sekmesi: dikey stacked grafikler — üstte kapasite % (sabit 0–100),
-//! altta güç W (dinamik [0, peak.max(15)] bounds). Reviewer'ın yakaladığı
-//! "power tek eksende sıkışıyor" hatasının düzeltmesi.
+//! Trend tab: vertically stacked charts — capacity % on top (fixed 0–100),
+//! power W below (dynamic [0, peak.max(15)] bounds). This fixes the issue a
+//! reviewer caught where "power was squashed against the axis on a single scale".
 
 use ratatui::{
     layout::{Constraint, Layout, Rect},
@@ -14,7 +14,7 @@ use crate::app::App;
 
 use super::opt_fmt;
 
-/// Trend sekmesini çizer.
+/// Render the Trend tab.
 pub fn render(app: &App, frame: &mut Frame, area: Rect, theme: &crate::ui::theme::Theme) {
     let [cap_area, pow_area, sum_area] = Layout::vertical([
         Constraint::Fill(1),
@@ -55,11 +55,11 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect, theme: &crate::ui::theme
     let powers: Vec<f64> = pow_pts.iter().map(|(_, p)| *p).collect();
     let pb = power_bounds(&powers);
 
-    // --- Capacity chart (sabit 0–100) + critical 20% çizgisi ---
+    // --- Capacity chart (fixed 0–100) + critical 20% line ---
     let crit_pts = [(0.0, 20.0), (span_h, 20.0)];
     let cap_chart = Chart::new(vec![
         Dataset::default()
-            // legend yok: panel başlığı "Capacity %" + özet zaten açıklıyor.
+            // no legend: the panel title "Capacity %" + summary already explain it.
             .marker(ratatui::symbols::Marker::Braille)
             .graph_type(GraphType::Line)
             .style(Style::new().fg(theme.accent))
@@ -85,14 +85,14 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect, theme: &crate::ui::theme
     );
     frame.render_widget(cap_chart, cap_area);
 
-    // Critical 20% çizgisinin (warn rengi) satırını bul ve o yüksekliğe
-    // sol eksende "20" yaz (ratatui Axis >3 etiketi kırık olduğu için manuel).
+    // Find the row of the critical 20% line (warn color) and write "20" on the
+    // left axis at that height (ratatui's Axis breaks with >3 labels, so it is manual).
     label_critical_20(frame, cap_area, theme.warn);
 
-    // Peak işaretçisi kaldırıldı: Scatter+Block büyük/kaba görünüyordu.
-    // Peak değeri özet çubuğunda ("peak X.XW") accent_alt ile yazılı.
+    // Peak marker removed: the Scatter+Block looked large/crude.
+    // The peak value is shown in the summary bar ("peak X.XW") in accent_alt.
     let pow_chart = Chart::new(vec![Dataset::default()
-        // legend yok: panel başlığı "Power W" zaten açıklıyor.
+        // no legend: the panel title "Power W" already explains it.
         .marker(ratatui::symbols::Marker::Braille)
         .graph_type(GraphType::Line)
         .style(Style::new().fg(theme.warn))
@@ -115,7 +115,7 @@ pub fn render(app: &App, frame: &mut Frame, area: Rect, theme: &crate::ui::theme
     render_summary(app, frame, sum_area, theme);
 }
 
-/// Trend sekmesinin özet çubuğu: örnek sayısı, ortalama/zirve güç, % düşüşü.
+/// Summary bar of the Trend tab: sample count, average/peak power, % drop.
 fn render_summary(app: &App, frame: &mut Frame, area: Rect, theme: &crate::ui::theme::Theme) {
     let powers: Vec<f64> = app.trend.iter().filter_map(|s| s.power_now).collect();
     let avg = (!powers.is_empty()).then(|| powers.iter().sum::<f64>() / powers.len() as f64);
@@ -152,14 +152,15 @@ fn render_summary(app: &App, frame: &mut Frame, area: Rect, theme: &crate::ui::t
     );
 }
 
-// --- trend-only yardımcılar ---------------------------------------------------
+// --- trend-only helpers -------------------------------------------------------
 
-/// Power grafiği için dinamik y-bounds: `[0.0, peak.max(15.0)]`.
-/// Critical 20% çizgisinin (warn rengindeki Braille hücreler) satırını bulup
-/// sol eksende o yüksekliğe "20" yazar (warn renginde).
-/// ratatui Axis 3'ten fazla etiketi kırık yerleştirdiği için manuel yapılır.
+/// Dynamic y-bounds for the power chart: `[0.0, peak.max(15.0)]`.
+///
+/// Finds the row of the critical 20% line (the warn-colored Braille cells) and
+/// writes "20" on the left axis at that height (in warn color).
+/// Done manually because ratatui's Axis places more than 3 labels incorrectly.
 fn label_critical_20(frame: &mut Frame, area: Rect, warn: Color) {
-    // warn renkli ilk hücreyi bul → y=20 satırı + plot sol kenarı.
+    // Find the first warn-colored cell → the y=20 row + the plot's left edge.
     let buf = frame.buffer_mut();
     let mut hit_row: Option<u16> = None;
     let mut plot_left: Option<u16> = None;
@@ -174,9 +175,9 @@ fn label_critical_20(frame: &mut Frame, area: Rect, warn: Color) {
     }
     let (row, plot_left) = match (hit_row, plot_left) {
         (Some(r), Some(p)) => (r, p),
-        _ => return, // çizgi bulunamadı (çok küçük alan)
+        _ => return, // line not found (area too small)
     };
-    // "20"yi plot sol kenarından hemen önceye yaz (etiketlerle sağa hizalı).
+    // Write "20" just before the plot's left edge (right-aligned with the labels).
     if plot_left >= 2 {
         let a = &mut buf[(plot_left - 2, row)];
         a.set_symbol("2");
@@ -187,13 +188,13 @@ fn label_critical_20(frame: &mut Frame, area: Rect, warn: Color) {
     }
 }
 
-/// 15W döşemesi, düşük tüketimde grafiğin düzleşmesini engeller.
+/// A 15W floor prevents the chart from flattening at low consumption.
 fn power_bounds(powers: &[f64]) -> [f64; 2] {
     let peak = powers.iter().copied().fold(0.0_f64, f64::max);
     [0.0, peak.max(15.0)]
 }
 
-/// Şimdiki Unix zaman damgası (saniye).
+/// Current Unix timestamp (seconds).
 fn chrono_now_ts() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

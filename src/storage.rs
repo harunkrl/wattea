@@ -1,7 +1,7 @@
-//! SQLite zaman-serisi deposu.
+//! SQLite time-series store.
 //!
-//! Daemon örnekleri yazar, TUI (ve gelecekteki analiz araçları) okur.
-//! WAL modu sayesinde eşzamanlı okuma/yazma kilitlenmesiz çalışır.
+//! The daemon writes samples; the TUI (and future analysis tools) read them.
+//! WAL mode enables lock-free concurrent reads and writes.
 
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -11,10 +11,10 @@ use rusqlite::{params, Connection};
 
 use crate::battery::{BatterySample, Status};
 
-/// Bir zaman-serisi örnek satırı (sorgu sonuçları için).
+/// A single time-series sample row (for query results).
 #[derive(Debug, Clone)]
 pub struct Sample {
-    /// Unix epoch saniyesi.
+    /// Unix epoch seconds.
     pub ts: i64,
     pub capacity: u8,
     pub status: Status,
@@ -29,19 +29,19 @@ pub struct Sample {
     pub temperature: Option<f64>,
 }
 
-/// Desen analizi için bir sepet (hour 0–23 veya weekday 0–6).
+/// A pattern-analysis bin (hour 0–23 or weekday 0–6).
 #[derive(Debug, Clone, Default)]
 pub struct HourlyBin {
-    /// Sepet indeksi: saatlik modda 0–23, günlük modda 0–6 (Pazar–Cmt).
+    /// Bin index: 0–23 in hourly mode, 0–6 in weekday mode (Sun–Sat).
     pub hour: u8,
     pub avg_pct_per_hour: f64,
     pub sample_count: usize,
 }
 
-/// Tek bir "prizden çekilmiş" (on-battery) oturumu.
+/// A single on-battery ("unplugged") session.
 ///
-/// Ardışık Discharging örneklerinden oluşur; Charging/Full aralıklarıyla
-/// veya uzun bir boşlukla (örn. suspend) bölünür.
+/// Consists of consecutive Discharging samples; split by Charging/Full runs
+/// or by a long gap (e.g. suspend).
 #[derive(Debug, Clone)]
 pub struct Session {
     pub start_ts: i64,
@@ -53,17 +53,17 @@ pub struct Session {
 }
 
 impl Session {
-    /// Oturum süresi (saniye).
+    /// Session duration (seconds).
     pub fn duration_secs(&self) -> i64 {
         self.end_ts - self.start_ts
     }
 
-    /// Toplam % kaybı (negatif = şarj olmuş, ama discharging-only olduğu için genelde ≥0).
+    /// Total % drop (negative = gained charge, but discharging-only so usually ≥ 0).
     pub fn capacity_drop(&self) -> i16 {
         self.start_capacity as i16 - self.end_capacity as i16
     }
 
-    /// Ortalama güç (W); power ölçümü olmayan örnekler toplama katılmaz.
+    /// Average power (W); samples without a power reading do not contribute.
     pub fn avg_power(&self) -> Option<f64> {
         if self.sample_count == 0 {
             return None;
@@ -71,7 +71,7 @@ impl Session {
         Some(self.power_sum / self.sample_count as f64)
     }
 
-    /// Oturumun ortalama %/saat tüketimi: drop / süre.
+    /// Session average %/hour consumption: drop / duration.
     pub fn avg_pct_per_hour(&self) -> Option<f64> {
         let hours = self.duration_secs() as f64 / 3600.0;
         if hours <= 0.0 {
@@ -81,7 +81,7 @@ impl Session {
     }
 }
 
-/// Beklenenden yüksek güç tüketen tek bir anomali örneği.
+/// A single anomaly sample with unexpectedly high power draw.
 #[derive(Debug, Clone)]
 pub struct Anomaly {
     pub ts: i64,
@@ -91,7 +91,7 @@ pub struct Anomaly {
     pub capacity: u8,
 }
 
-/// Process başına toplu tahmini güç (history sorgusu için).
+/// Per-process aggregate estimated power (for history queries).
 #[derive(Debug, Clone)]
 pub struct ProcessAgg {
     pub name: String,
@@ -101,7 +101,7 @@ pub struct ProcessAgg {
 }
 
 impl Sample {
-    /// Tam bir örnek oluştur (batarya + sistem metrikleri).
+    /// Build a full sample (battery + system metrics).
     pub fn new(ts: i64, s: &BatterySample, sys: &crate::system::SystemMetrics) -> Self {
         Self {
             ts,
@@ -120,7 +120,7 @@ impl Sample {
     }
 }
 
-/// SQLite deposu. Daemon ve TUI ayrı `Store` örneği açar.
+/// SQLite store. The daemon and TUI each open their own `Store` instance.
 pub struct Store {
     conn: Connection,
 }
@@ -132,16 +132,17 @@ impl std::fmt::Debug for Store {
 }
 
 impl Store {
-    /// DB'yi aç; yoksa `data_dir` altında oluştur ve şemayı kur.
+    /// Open the DB; create it under `data_dir` if missing and set up the schema.
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .wrap_err_with(|| format!("veri dizini oluşturulamadı: {}", parent.display()))?;
+            std::fs::create_dir_all(parent).wrap_err_with(|| {
+                format!("failed to create data directory: {}", parent.display())
+            })?;
         }
         let conn = Connection::open(path)
-            .wrap_err_with(|| format!("SQLite açılamadı: {}", path.display()))?;
+            .wrap_err_with(|| format!("failed to open SQLite: {}", path.display()))?;
 
-        // WAL: eşzamanlı okuma/yazma, çökme-güvenli.
+        // WAL: concurrent read/write, crash-safe.
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "busy_timeout", 5000)?;
@@ -152,7 +153,7 @@ impl Store {
         Ok(Self { conn })
     }
 
-    /// Bellek içi DB (testler için).
+    /// In-memory DB (for tests).
     #[cfg(test)]
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
@@ -161,7 +162,7 @@ impl Store {
         Ok(Self { conn })
     }
 
-    /// Tek bir örnek ekle.
+    /// Insert a single sample.
     pub fn insert(&self, sample: &Sample) -> Result<()> {
         self.conn.execute(
             INSERT_SQL,
@@ -183,7 +184,7 @@ impl Store {
         Ok(())
     }
 
-    /// Belirli bir andan itibaren tüm örnekleri getir (trend grafikleri için).
+    /// Fetch all samples since a given point in time (for trend charts).
     pub fn query_since(&self, since_secs_ago: u64) -> Result<Vec<Sample>> {
         let now = now_ts();
         let cutoff = now - since_secs_ago as i64;
@@ -196,7 +197,7 @@ impl Store {
         Ok(out)
     }
 
-    /// En son N örneği getir (en yeni sonda).
+    /// Fetch the last N samples (newest last).
     pub fn query_last(&self, n: u32) -> Result<Vec<Sample>> {
         let mut stmt = self.conn.prepare(SELECT_LAST_SQL)?;
         let rows = stmt.query_map(params![n as i64], row_to_sample)?;
@@ -207,21 +208,21 @@ impl Store {
         Ok(out)
     }
 
-    /// Toplam örnek sayısı (sistem durumu/teşhis için).
+    /// Total sample count (for status/diagnostics).
     pub fn count(&self) -> Result<i64> {
         Ok(self
             .conn
             .query_row("SELECT COUNT(*) FROM samples", [], |r| r.get(0))?)
     }
 
-    /// Beklenenden yüksek güç tüketen örnekleri (anomaliler) bul.
+    /// Find samples with unexpectedly high power draw (anomalies).
     ///
-    /// Discharging örneklerinin güç dağılımında z-skoru `z_threshold`'den
-    /// büyük olanları döndürür (varsayılan 2.0 = ~üst %2.3). Sonuç en yeni
-    /// en üstte.
+    /// Among Discharging samples, returns those whose z-score in the power
+    /// distribution exceeds `z_threshold` (default 2.0 ≈ top 2.3%). Results
+    /// are newest first.
     pub fn query_anomalies(&self, z_threshold: f64) -> Result<Vec<Anomaly>> {
         let all = self.query_all()?;
-        // Sadece discharging + güç ölçümü olanlar.
+        // Only discharging samples with a power reading.
         let powers: Vec<(usize, f64)> = all
             .iter()
             .enumerate()
@@ -255,11 +256,11 @@ impl Store {
         Ok(out)
     }
 
-    /// Saat-bazına ortalama %/saat tüketim deseni (0–23).
+    /// Average %/hour consumption pattern by hour of day (0–23).
     ///
-    /// Yalnızca `Discharging` örneklerini alır (şarjdayken desen anlamsız).
-    /// Her saat için o saatteki tüm günlerin ortalama tüketim hızıdır —
-    /// "saat 14'te genelde %X/sa harcarım" deseni.
+    /// Only `Discharging` samples are used (charging makes the pattern
+    /// meaningless). For each hour, the value is the average consumption rate
+    /// across all days at that hour — the "at 14:00 I usually burn %X/h" pattern.
     pub fn query_hourly_pattern(&self) -> Result<Vec<HourlyBin>> {
         let mut stmt = self.conn.prepare(HOURLY_PATTERN_SQL)?;
         let rows = stmt.query_map([], |row| {
@@ -276,7 +277,7 @@ impl Store {
         Ok(out)
     }
 
-    /// Gün-bazına ortalama %/saat tüketim deseni (Pazar=0 … Cumartesi=6).
+    /// Average %/hour consumption pattern by day of week (Sunday=0 … Saturday=6).
     pub fn query_weekday_pattern(&self) -> Result<Vec<HourlyBin>> {
         let mut stmt = self.conn.prepare(WEEKDAY_PATTERN_SQL)?;
         let rows = stmt.query_map([], |row| {
@@ -293,7 +294,7 @@ impl Store {
         Ok(out)
     }
 
-    /// Tüm örnekleri ts artan sırada döndür (session segmentasyonu/export için).
+    /// Return all samples in ascending ts order (for session segmentation/export).
     pub fn query_all(&self) -> Result<Vec<Sample>> {
         let mut stmt = self.conn.prepare(SELECT_ALL_SQL)?;
         let rows = stmt.query_map([], row_to_sample)?;
@@ -304,11 +305,11 @@ impl Store {
         Ok(out)
     }
 
-    /// On-battery (Discharging) oturumlarını segmente et.
+    /// Segment on-battery (Discharging) sessions.
     ///
-    /// `gap_secs`'den büyük boşluk yeni oturum sayılır (suspend/örnekleme
-    /// atlamalarını ayırır). Sonuç en yeni oturum en üstte olacak şekilde
-    /// ters kronolojik döner.
+    /// A gap larger than `gap_secs` starts a new session (separates
+    /// suspend/sampling skips). Results are returned in reverse chronological
+    /// order (newest session first).
     pub fn query_sessions(&self, gap_secs: i64) -> Result<Vec<Session>> {
         let samples = self.query_all()?;
         let mut sessions: Vec<Session> = Vec::new();
@@ -332,7 +333,7 @@ impl Store {
                     Some(sess) => {
                         let gap = s.ts - sess.end_ts;
                         if gap > gap_secs {
-                            // Uzun boşluk: oturumu kapat, yenisini aç.
+                            // Long gap: close the session, start a new one.
                             if let Some(c) = current.take() {
                                 sessions.push(c);
                             }
@@ -353,7 +354,7 @@ impl Store {
                     }
                 }
             } else if current.is_some() {
-                // Discharging dışına çıkıldı (şarj/dolu): oturumu kapat.
+                // Left the discharging state (charging/full): close the session.
                 sessions.push(current.take().unwrap());
             }
         }
@@ -361,12 +362,12 @@ impl Store {
             sessions.push(c);
         }
 
-        // En yeni en üstte.
+        // Newest first.
         sessions.sort_by_key(|b| std::cmp::Reverse(b.start_ts));
         Ok(sessions)
     }
 
-    /// Process snapshot'larını toplu ekle (daemon çağırır).
+    /// Bulk-insert process snapshots (called by the daemon).
     pub fn insert_process_snapshots(
         &self,
         ts: i64,
@@ -383,8 +384,8 @@ impl Store {
         Ok(())
     }
 
-    /// Belirli bir penceredeki (saniye) process'leri ada göre toplulaştır:
-    /// ortalama W, ortalama CPU%, örnek sayısı. Yüksek ortalama W'dan düşüğe.
+    /// Aggregate processes within a window (seconds) by name:
+    /// average W, average CPU%, sample count. Sorted by avg W descending.
     pub fn query_top_processes(&self, window_secs: u64) -> Result<Vec<ProcessAgg>> {
         let now = now_ts();
         let cutoff = now - window_secs as i64;
@@ -404,7 +405,7 @@ impl Store {
         Ok(out)
     }
 
-    /// `retention_secs`'den eski process snapshot'larını sil.
+    /// Delete process snapshots older than `retention_secs`.
     pub fn prune_process_snapshots(&self, retention_secs: u64) -> Result<usize> {
         let now = now_ts();
         let cutoff = now - retention_secs as i64;
@@ -413,7 +414,7 @@ impl Store {
     }
 }
 
-// --- SQL sabitleri ------------------------------------------------------------
+// --- SQL constants ------------------------------------------------------------
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS samples (
@@ -432,10 +433,10 @@ CREATE TABLE IF NOT EXISTS samples (
     temperature        REAL
 );
 CREATE INDEX IF NOT EXISTS idx_samples_ts ON samples(ts);
--- Idempotent backfill: aynı ts tekrar insert edilirse sessizce yok sayılır.
+-- Idempotent backfill: re-inserting the same ts is silently ignored.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_samples_ts ON samples(ts);
 
--- Process başına tahmini güç snapshot'ları (daemon yazar).
+-- Per-process estimated power snapshots (written by the daemon).
 CREATE TABLE IF NOT EXISTS process_snapshot (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,
     ts      INTEGER NOT NULL,
@@ -483,7 +484,7 @@ FROM samples
 ORDER BY ts ASC
 ";
 
-/// Saat-bazına ortalama %/sa (yalnız boşalma; localtime dönüşümüyle).
+/// Average %/h by hour of day (discharging only; converted to localtime).
 const HOURLY_PATTERN_SQL: &str = "
 SELECT CAST(strftime('%H', ts, 'unixepoch', 'localtime') AS INTEGER) AS hour,
        AVG(power_now / energy_full * 100.0)                          AS avg_rate,
@@ -497,7 +498,7 @@ GROUP BY hour
 ORDER BY hour
 ";
 
-/// Gün-bazına ortalama %/sa (weekday: 0=Pazar … 6=Cumartesi).
+/// Average %/h by day of week (weekday: 0=Sunday … 6=Saturday).
 const WEEKDAY_PATTERN_SQL: &str = "
 SELECT CAST(strftime('%w', ts, 'unixepoch', 'localtime') AS INTEGER) AS day,
        AVG(power_now / energy_full * 100.0)                          AS avg_rate,
@@ -511,13 +512,13 @@ GROUP BY day
 ORDER BY day
 ";
 
-/// Process snapshot toplu ekleme.
+/// Bulk insert for process snapshots.
 const INSERT_PROC_SQL: &str = "
 INSERT INTO process_snapshot (ts, pid, name, cpu_pct, est_w)
 VALUES (?1, ?2, ?3, ?4, ?5)
 ";
 
-/// Pencere içinde ada göre toplu tahmini güç (avg W'ya göre azalan).
+/// Per-name aggregate estimated power within a window (descending by avg W).
 const TOP_PROC_SQL: &str = "
 SELECT name,
        AVG(est_w)   AS avg_w,
@@ -529,12 +530,12 @@ GROUP BY name
 ORDER BY avg_w DESC
 ";
 
-/// Eski process snapshot'larını sil (retention).
+/// Delete old process snapshots (retention).
 const PRUNE_PROC_SQL: &str = "
 DELETE FROM process_snapshot WHERE ts < ?1
 ";
 
-// --- yardımcılar --------------------------------------------------------------
+// --- helpers ------------------------------------------------------------------
 
 fn now_ts() -> i64 {
     SystemTime::now()
@@ -561,10 +562,10 @@ fn row_to_sample(row: &rusqlite::Row<'_>) -> rusqlite::Result<Sample> {
     })
 }
 
-/// Eski DB'lerde eksik kolonları idempotent olarak ekle (cpu_load/brightness/temperature).
+/// Idempotently add missing columns to old DBs (cpu_load/brightness/temperature).
 ///
-/// SCHEMA `IF NOT EXISTS` kullandığı için mevcut tablo yeniden oluşturulmaz;
-/// bu yüzden yeni kolonlar ALTER TABLE ile eklenir.
+/// Because SCHEMA uses `IF NOT EXISTS`, an existing table is not recreated;
+/// new columns are therefore added via ALTER TABLE.
 fn migrate(conn: &Connection) -> Result<()> {
     let cols: Vec<String> = conn
         .prepare("PRAGMA table_info(samples)")?
@@ -584,7 +585,7 @@ fn migrate(conn: &Connection) -> Result<()> {
 }
 
 fn parse_status(s: &str) -> Status {
-    // Status::label() ile yazılan değerleri geri çöz.
+    // Resolve back the values written by Status::label().
     match s {
         "Charging" => Status::Charging,
         "Discharging" => Status::Discharging,
@@ -642,7 +643,7 @@ mod tests {
     fn query_since_returns_recent_samples() {
         let store = Store::open_in_memory().unwrap();
         let now = now_ts();
-        // Şimdiki zaman civarına veri ekle (geçmiş/zamanın dışında değil).
+        // Insert data around the current time (not in the distant past).
         store
             .insert(&sample(now, 80, Some(5.0), Status::Discharging))
             .unwrap();
@@ -653,10 +654,10 @@ mod tests {
             .insert(&sample(now + 2, 78, Some(7.0), Status::Discharging))
             .unwrap();
 
-        // Çok geniş pencere (≥ epoch'tan beri) → tümünü getirir.
+        // Very wide window (≥ since the epoch) → returns everything.
         let since = store.query_since(u64::MAX / 2).unwrap();
         assert!(since.len() >= 3);
-        // Sıralı (ts artan).
+        // Sorted (ts ascending).
         assert!(since.windows(2).all(|w| w[0].ts <= w[1].ts));
     }
 
@@ -676,15 +677,15 @@ mod tests {
         let last3 = store.query_last(3).unwrap();
         assert_eq!(last3.len(), 3);
         assert_eq!(last3[0].capacity, 83); // ts 1007
-        assert_eq!(last3[2].capacity, 81); // ts 1009 (en yeni)
+        assert_eq!(last3[2].capacity, 81); // ts 1009 (newest)
     }
 
     #[test]
     fn hourly_pattern_aggregates_by_hour() {
         let store = Store::open_in_memory().unwrap();
-        // ts=0 → 00:00 UTC, ts=3600 → 01:00 UTC (localtime'a göre kayabilir ama
-        // iki örnek farklı saatlere düşer). %/h = power/energy_full*100 = power/50*100.
-        // Saat A'da iki örnek (5W→10%/h, 15W→30%/h → avg 20), saat B'de tek (10W→20%/h).
+        // ts=0 → 00:00 UTC, ts=3600 → 01:00 UTC (may shift by localtime, but
+        // the two samples land in different hours). %/h = power/energy_full*100 = power/50*100.
+        // Hour A has two samples (5W→10%/h, 15W→30%/h → avg 20), hour B has one (10W→20%/h).
         store
             .insert(&sample(0, 80, Some(5.0), Status::Discharging))
             .unwrap();
@@ -694,21 +695,21 @@ mod tests {
         store
             .insert(&sample(3600, 70, Some(10.0), Status::Discharging))
             .unwrap();
-        // Charging örnekleri desene girmemeli.
+        // Charging samples must not enter the pattern.
         store
             .insert(&sample(120, 79, Some(20.0), Status::Charging))
             .unwrap();
 
         let bins = store.query_hourly_pattern().unwrap();
-        // Charging hariç 3 discharging örnek, 2 ayrı saate dağılmış → 2 bin.
+        // 3 discharging samples excluding charging, split across 2 hours → 2 bins.
         assert_eq!(bins.len(), 2);
-        // Toplam örnek sayısı charging hariç 3 olmalı.
+        // Total sample count excluding charging must be 3.
         let total_n: usize = bins.iter().map(|b| b.sample_count).sum();
         assert_eq!(total_n, 3);
-        // Tek örnekli bin %/h = 20 (10W/50*100).
+        // The single-sample bin %/h = 20 (10W/50*100).
         let single = bins.iter().find(|b| b.sample_count == 1).unwrap();
         assert!((single.avg_pct_per_hour - 20.0).abs() < 0.01);
-        // İki örnekli bin avg = (10+30)/2 = 20 %/h.
+        // The two-sample bin avg = (10+30)/2 = 20 %/h.
         let double = bins.iter().find(|b| b.sample_count == 2).unwrap();
         assert!((double.avg_pct_per_hour - 20.0).abs() < 0.01);
     }
@@ -716,7 +717,7 @@ mod tests {
     #[test]
     fn sessions_segment_discharging_runs() {
         let store = Store::open_in_memory().unwrap();
-        // discharge(10) → charge(kesinti) → discharge(10) → uzun gap → discharge(2)
+        // discharge(10) → charge(interrupt) → discharge(10) → long gap → discharge(2)
         for i in 0..10 {
             store
                 .insert(&sample(i, 90 - i as u8, Some(5.0), Status::Discharging))
@@ -730,26 +731,26 @@ mod tests {
                 .insert(&sample(20 + i, 70, Some(5.0), Status::Discharging))
                 .unwrap();
         }
-        // 10dk = 600sn gap'ten büyük boşluk → ayrı session.
+        // A gap larger than 10 min (600s) → separate session.
         store
             .insert(&sample(20 + 10 + 700, 70, Some(5.0), Status::Discharging))
             .unwrap();
 
         let sessions = store.query_sessions(600).unwrap();
-        // 3 session: [0..10), [20..30), [son].
+        // 3 sessions: [0..10), [20..30), [last].
         assert_eq!(sessions.len(), 3);
-        // İlk session: 90→81, 10 örnek.
+        // First session: 90→81, 10 samples.
         assert_eq!(sessions[2].start_capacity, 90);
         assert_eq!(sessions[2].end_capacity, 81);
         assert_eq!(sessions[2].sample_count, 10);
-        // En yeni en üstte.
+        // Newest first.
         assert!(sessions[0].start_ts >= sessions[1].start_ts);
     }
 
     #[test]
     fn anomalies_flag_high_zscore_power() {
         let store = Store::open_in_memory().unwrap();
-        // 9 düşük güç (~5W) + 1 aykırı (50W).
+        // 9 low-power (~5W) + 1 outlier (50W).
         for i in 0..9 {
             store
                 .insert(&sample(i, 80, Some(5.0), Status::Discharging))
@@ -795,13 +796,13 @@ mod tests {
 
     #[test]
     fn migrate_adds_columns_to_old_schema() {
-        // Eski (9-kolonlu) şemayla bir DB aç, sonra Store::open_in_memory
-        // ile yeni şema+migration çalışınca kolonların eklenmiş olduğunu doğrula.
+        // Open a DB with the old (9-column) schema, then verify that opening
+        // with the new schema + migration adds the columns.
         let store = Store::open_in_memory().unwrap();
         store
             .insert(&sample(1, 80, Some(5.0), Status::Discharging))
             .unwrap();
-        // open_in_memory zaten migrate() çağırır; kolonların varlığını doğrula.
+        // open_in_memory already calls migrate(); verify the columns exist.
         let cols: Vec<String> = store
             .conn
             .prepare("PRAGMA table_info(samples)")
@@ -821,7 +822,7 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let now = now_ts();
 
-        // Şimdi civarı iki snapshot grubu (chrome + firefox).
+        // Two snapshot groups around now (chrome + firefox).
         let snaps = vec![
             ProcessPower {
                 pid: 1,
@@ -839,7 +840,7 @@ mod tests {
         store.insert_process_snapshots(now, &snaps).unwrap();
         store.insert_process_snapshots(now + 60, &snaps).unwrap();
 
-        // Eski (pencere dışı) kayıt → hariç kalmalı.
+        // An old (out-of-window) record → must be excluded.
         let old = vec![ProcessPower {
             pid: 3,
             name: "old".into(),
@@ -848,16 +849,16 @@ mod tests {
         }];
         store.insert_process_snapshots(now - 7200, &old).unwrap();
 
-        // Son 1 saat (3600sn) sorgusu: chrome avg 1.6 (2 örnek), firefox 0.4.
+        // Last 1 hour (3600s) query: chrome avg 1.6 (2 samples), firefox 0.4.
         let top = store.query_top_processes(3600).unwrap();
-        assert_eq!(top.len(), 2); // 'old' hariç
+        assert_eq!(top.len(), 2); // 'old' excluded
         assert_eq!(top[0].name, "chrome");
         assert!((top[0].avg_w - 1.6).abs() < 1e-6);
         assert_eq!(top[0].sample_count, 2);
 
-        // Prune: 1 saatlik retention → eski hariç hepsi silinir.
+        // Prune: 1-hour retention → everything old is deleted.
         let removed = store.prune_process_snapshots(3600).unwrap();
-        assert!(removed >= 1, "eski kayıt silinmeli");
+        assert!(removed >= 1, "old record should be deleted");
         let top2 = store.query_top_processes(u64::MAX / 2).unwrap();
         assert!(top2.iter().all(|p| p.name != "old"));
     }

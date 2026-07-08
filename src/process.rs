@@ -1,51 +1,51 @@
-//! Process başına **tahmini** güç tüketimi.
+//! Per-process **estimated** power consumption.
 //!
-//! Linux çekirdeği process başına watt vermez. Bu modül bir tahmin (attribution)
-//! yapar: her process'in CPU zamanı payını (`/proc/[pid]/stat` → utime+stime
-//! deltası) ölçer, toplam CPU paket gücünü (RAPL `energy_uj` deltası) bu paya
-//! orantılar. RAPL okunamazsa yalnızca CPU% gösterilir (est_w = 0).
+//! The Linux kernel does not provide per-process watts. This module produces
+//! an estimate (attribution): it measures each process's share of CPU time
+//! (from `/proc/[pid]/stat` → utime+stime delta) and apportions the total CPU
+//! package power (RAPL `energy_uj` delta) by that share. When RAPL cannot be
+//! read, only CPU% is shown (est_w = 0).
 //!
-//! Bu tahmindir — kesin watt değildir. UI'da "est." olarak etiketlenir.
+//! This is an estimate — not an exact watt value. It is labeled "est." in the UI.
 
 use std::collections::HashMap;
 use std::fs;
 use std::time::Instant;
 
-/// Çoğu Linux'ta CLK_TCK = 100 (sysconf(_SC_CLK_TCK)).
+/// On most Linux systems CLK_TCK = 100 (sysconf(_SC_CLK_TCK)).
 const CLK_TCK: f64 = 100.0;
 
-/// Tek process'in tahmini güç katkısı.
+/// A single process's estimated power contribution.
 #[derive(Debug, Clone)]
 pub struct ProcessPower {
     pub pid: u32,
     pub name: String,
-    /// Toplam CPU kapasitesinin yüzdesi (çok çekirdekli > 100 olabilir).
+    /// Percentage of total CPU capacity (may exceed 100% on multicore).
     pub cpu_pct: f64,
-    /// Tahmini güç katkısı (W). RAPL yoksa 0.
+    /// Estimated power contribution (W). 0 when RAPL is unavailable.
     pub est_w: f64,
 }
 
-/// Bir process okuması (iç state).
+/// A single process reading (internal state).
 #[derive(Debug)]
 struct ProcEntry {
     comm: String,
     ticks: u64, // utime + stime (clock ticks)
 }
 
-/// Stateful process okuyucu. İki örnek arasındaki delta ile CPU%/W hesaplar.
+/// Stateful process reader. Computes CPU%/W from the delta between two samples.
 #[derive(Debug, Default)]
 pub struct ProcessReader {
     prev: Option<(Instant, HashMap<u32, ProcEntry>, Option<u64>)>,
 }
-
 
 impl ProcessReader {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Örnekle ve en yüksek tahmini güçlü `n` process'i döndür.
-    /// İlk örnekte delta yoktur → boş vektör.
+    /// Sample and return the top `n` processes by estimated power.
+    /// On the first sample there is no delta → empty vector.
     pub fn top(&mut self, n: usize) -> Vec<ProcessPower> {
         let now = Instant::now();
         let cur = read_all_procs();
@@ -53,7 +53,7 @@ impl ProcessReader {
 
         let result = if let Some((ptime, pmap, prapl)) = self.prev.take() {
             let dt = now.duration_since(ptime).as_secs_f64().max(1e-6);
-            // RAPL deltasından toplam CPU gücü (W).
+            // Total CPU power (W) from the RAPL delta.
             let total_w = match (rapl, prapl) {
                 (Some(c), Some(p)) => Some((c.saturating_sub(p)) as f64 / 1e6 / dt),
                 _ => None,
@@ -65,7 +65,7 @@ impl ProcessReader {
                 .filter_map(|(pid, e)| {
                     let p = pmap.get(pid)?;
                     let dticks = e.ticks.saturating_sub(p.ticks) as f64;
-                    // CPU zamanının toplam CPU kapasitesine oranı.
+                    // Ratio of CPU time to total CPU capacity.
                     let cpu_frac = dticks / (dt * CLK_TCK * cpus);
                     let cpu_pct = cpu_frac * 100.0;
                     let est_w = total_w.map(|w| cpu_frac * w).unwrap_or(0.0);
@@ -77,7 +77,7 @@ impl ProcessReader {
                     })
                 })
                 .collect();
-            // Önce tahmini güce, eşitse CPU%'ye göre sırala (yüksek→düşük).
+            // Sort by estimated power first, then by CPU% on ties (high → low).
             out.sort_by(|a, b| {
                 b.est_w
                     .partial_cmp(&a.est_w)
@@ -98,33 +98,34 @@ impl ProcessReader {
     }
 }
 
-/// Toplam CPU çekirdek sayısı (fallback 1).
+/// Total CPU core count (fallback 1).
 fn available_cpus() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1)
 }
 
-/// `/proc` altındaki tüm numeric PID'leri okur → pid, comm, utime+stime.
+/// Read all numeric PIDs under `/proc` → pid, comm, utime+stime.
 fn read_all_procs() -> HashMap<u32, ProcEntry> {
     let mut map = HashMap::new();
     if let Ok(entries) = fs::read_dir("/proc") {
         for e in entries.flatten() {
             if let Some(name) = e.file_name().to_str()
                 && let Ok(pid) = name.parse::<u32>()
-                    && let Ok(stat) = fs::read_to_string(e.path().join("stat"))
-                        && let Some((_, comm, ticks)) = parse_proc_stat(&stat) {
-                            map.insert(pid, ProcEntry { comm, ticks });
-                        }
+                && let Ok(stat) = fs::read_to_string(e.path().join("stat"))
+                && let Some((_, comm, ticks)) = parse_proc_stat(&stat)
+            {
+                map.insert(pid, ProcEntry { comm, ticks });
+            }
         }
     }
     map
 }
 
-/// `/proc/[pid]/stat` satırını ayrıştırır → (pid, comm, utime+stime ticks).
+/// Parse a `/proc/[pid]/stat` line → (pid, comm, utime+stime ticks).
 ///
-/// `comm` parantez içinde olabilir, boşluk/parantez içerebilir. Bu yüzden
-/// ilk `(` ile son `)` arası comm olarak alınır.
+/// `comm` is wrapped in parentheses and may contain spaces/parentheses. We
+/// therefore take everything between the first `(` and the last `)` as comm.
 pub fn parse_proc_stat(line: &str) -> Option<(u32, String, u64)> {
     let lparen = line.find('(')?;
     let rparen = line.rfind(')')?;
@@ -133,8 +134,8 @@ pub fn parse_proc_stat(line: &str) -> Option<(u32, String, u64)> {
     }
     let pid: u32 = line[..lparen].trim().parse().ok()?;
     let comm = line[lparen + 1..rparen].to_string();
-    // Parantez sonrası: state ppid ... utime stime ...
-    // utime = alan 14, stime = alan 15 (1-tabanlı). Parantez sonrası alan 3 = state
+    // After the parens: state ppid ... utime stime ...
+    // utime = field 14, stime = field 15 (1-based). After the parens, field 3 = state
     // → utime index 14-3 = 11, stime index 12.
     let rest: Vec<&str> = line[rparen + 1..].split_whitespace().collect();
     let utime: u64 = rest.get(11)?.parse().ok()?;
@@ -142,16 +143,17 @@ pub fn parse_proc_stat(line: &str) -> Option<(u32, String, u64)> {
     Some((pid, comm, utime + stime))
 }
 
-/// RAPL toplam CPU paket enerjisini okur (microjoule).
+/// Read the total CPU package energy from RAPL (microjoules).
 ///
-/// `/sys/class/powercap/intel-rapl-0/energy_uj` (Intel). AMD/okunamazsa None.
-/// Sadece "package0" düğümünü alır (name "package-X" arar).
+/// `/sys/class/powercap/intel-rapl-0/energy_uj` (Intel). Returns None on
+/// AMD/unavailable systems. Only the "package0" node is used (looks for a
+/// name starting with "package").
 pub fn read_rapl_energy() -> Option<u64> {
     let base = std::path::Path::new("/sys/class/powercap");
     let entries = fs::read_dir(base).ok()?;
     for e in entries.flatten() {
         let dir = e.path();
-        // Alt düğüm mü yoksa paket mi kontrol et (package_X name).
+        // Check whether this is a sub-node or the package (package_X name).
         let name = fs::read_to_string(dir.join("name")).ok()?;
         let name = name.trim();
         if name.starts_with("package") {
@@ -170,9 +172,9 @@ mod tests {
 
     #[test]
     fn parse_simple_comm() {
-        // Parantez sonrası: state(0) ppid(1) pgrp(2) session(3) tty_nr(4) tpgid(5)
+        // After the parens: state(0) ppid(1) pgrp(2) session(3) tty_nr(4) tpgid(5)
         // flags(6) minflt(7) cminflt(8) majflt(9) cmajflt(10) utime(11) stime(12).
-        // → state + 10 yer tutucu, sonra utime stime.
+        // → state + 10 placeholders, then utime stime.
         let mut rest = String::from("R ");
         for _ in 0..10 {
             rest.push_str("0 ");
@@ -201,8 +203,9 @@ mod tests {
 
     #[test]
     fn parse_comm_with_parens() {
-        // comm içinde parantez varsa: ilk ( ... son ) arası doğru alınmalı.
-        // rest: state + 10 yer tutucu + utime(11) + stime(12).
+        // When comm contains parens, everything between the first ( and last )
+        // must be taken correctly.
+        // rest: state + 10 placeholders + utime(11) + stime(12).
         let line = "9 (foo (bar) baz) S 0 0 0 0 0 0 0 0 0 0 7 8 0".to_string();
         // rest = "S 0 0 0 0 0 0 0 0 0 0 7 8 0"; idx0=S, idx11=7, idx12=8
         let (pid, comm, ticks) = parse_proc_stat(&line).unwrap();
@@ -215,14 +218,15 @@ mod tests {
     fn parse_malformed_returns_none() {
         assert_eq!(parse_proc_stat("no parens here"), None);
         assert_eq!(parse_proc_stat("(no pid) R"), None);
-        assert_eq!(parse_proc_stat("abc (x) R"), None); // pid parse edilemez
+        assert_eq!(parse_proc_stat("abc (x) R"), None); // pid cannot be parsed
     }
 
     #[test]
     fn process_reader_first_sample_empty() {
-        // İlk örnekte /proc gerçekten okunur ama delta yok → boş ( veya /proc yoksa da boş).
+        // On the first sample /proc is actually read but there is no delta → empty
+        // (also empty when /proc is unavailable).
         let mut r = ProcessReader::new();
         let out = r.top(5);
-        assert!(out.is_empty(), "ilk örnekte delta olmadığından boş olmalı");
+        assert!(out.is_empty(), "first sample must be empty (no delta yet)");
     }
 }

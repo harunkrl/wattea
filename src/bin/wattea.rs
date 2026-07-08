@@ -1,6 +1,6 @@
-//! wattea — TUI batarya paneli.
+//! wattea — TUI battery dashboard.
 //!
-//! Canlı sysfs verisinden ratatui dashboard çizer.
+//! Renders a ratatui dashboard from live sysfs data.
 
 use std::time::Duration;
 
@@ -30,7 +30,7 @@ fn main() -> Result<()> {
     }
 
     let battery = Battery::detect()?;
-    // DB varsa aç: hem canlı sysfs hem SQLite history birlikte gösterilir.
+    // Open the DB if present: shows live sysfs and SQLite history together.
     let store = wattea::db_path().and_then(|p| Store::open(&p).ok());
 
     let mut terminal = ratatui::init();
@@ -40,10 +40,11 @@ fn main() -> Result<()> {
     result
 }
 
-/// `wattea import`: UPower `.dat` history'sini SQLite'a aktar (geri-dolum).
+/// `wattea import`: transfer UPower `.dat` history into SQLite (backfill).
 fn run_import() -> Result<()> {
     let battery = Battery::detect()?;
-    let db = wattea::db_path().ok_or_else(|| color_eyre::eyre::eyre!("veri dizini bulunamadı"))?;
+    let db =
+        wattea::db_path().ok_or_else(|| color_eyre::eyre::eyre!("data directory not found"))?;
     let store = Store::open(&db)?;
     let before = store.count()?;
 
@@ -56,17 +57,18 @@ fn run_import() -> Result<()> {
     )?;
     let after = store.count()?;
 
-    println!("🔋 UPower history → SQLite");
-    println!("   import edilen örnek: {n}");
-    println!("   depodaki toplam    : {before} → {after}");
-    println!("   veritabanı         : {}", db.display());
+    println!("📥 UPower history → SQLite");
+    println!("   samples imported : {n}");
+    println!("   total in store   : {before} → {after}");
+    println!("   database         : {}", db.display());
     Ok(())
 }
 
-/// `wattea export [file]`: tüm örnekleri CSV'ye aktar.
-/// Dosya verilmezse stdout'a yazar.
+/// `wattea export [file]`: dump all samples to CSV.
+/// Writes to stdout when no file is given.
 fn run_export(dest: Option<&str>) -> Result<()> {
-    let db = wattea::db_path().ok_or_else(|| color_eyre::eyre::eyre!("veri dizini bulunamadı"))?;
+    let db =
+        wattea::db_path().ok_or_else(|| color_eyre::eyre::eyre!("data directory not found"))?;
     let store = Store::open(&db)?;
     let samples = store.query_all()?;
 
@@ -74,7 +76,7 @@ fn run_export(dest: Option<&str>) -> Result<()> {
     match dest {
         Some(path) => {
             std::fs::write(path, &csv)?;
-            println!("✅ {} satır → {}", samples.len(), path);
+            println!("✅ {} rows → {}", samples.len(), path);
         }
         None => {
             use std::io::Write;
@@ -85,7 +87,7 @@ fn run_export(dest: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// Basit, güvenli CSV üretimi (RFC 4180 alıntılama).
+/// Simple, safe CSV generation (RFC 4180 quoting).
 fn to_csv(samples: &[wattea::storage::Sample]) -> String {
     let header = "timestamp,datetime_utc,capacity_pct,status,power_w,voltage_v,energy_now_wh,energy_full_wh,cycle_count,cpu_load_pct,brightness_pct,temperature_c";
     let mut out = String::from(header);
@@ -115,7 +117,7 @@ fn to_csv(samples: &[wattea::storage::Sample]) -> String {
     out
 }
 
-/// Alan virgül/tırnak/yeni satır içeriyorsa çift tırnakla sar.
+/// Wrap a field in double quotes if it contains a comma/quote/newline.
 fn csv_field(s: &str) -> String {
     if s.contains(',') || s.contains('"') || s.contains('\n') {
         format!("\"{}\"", s.replace('"', "\"\""))
@@ -124,7 +126,7 @@ fn csv_field(s: &str) -> String {
     }
 }
 
-/// Option<f64> → CSV alanı (None ise boş).
+/// Format an Option<f64> as a CSV field (empty when None).
 fn opt2(v: Option<f64>) -> String {
     v.map(|x| format!("{x:.2}")).unwrap_or_default()
 }
@@ -136,13 +138,13 @@ fn format_ts_utc(ts: i64) -> String {
     let h = secs / 3600;
     let m = (secs % 3600) / 60;
     let s = secs % 60;
-    // 1970-01-01'den itibaren gün → yıl/ay/gün (Gregorian).
+    // Days since 1970-01-01 → year/month/day (Gregorian).
     let (y, mo, d) = days_to_ymd(days);
     format!("{y:04}-{mo:02}-{d:02} {h:02}:{m:02}:{s:02}")
 }
 
 fn days_to_ymd(days_since_epoch: i64) -> (i32, u32, u32) {
-    // Howard Hinnant'in civil_from_days algoritması.
+    // Howard Hinnant's civil_from_days algorithm.
     let z = days_since_epoch + 719468;
     let era = if z >= 0 { z } else { z - 146096 } / 146097;
     let doe = z - era * 146097; // [0, 146096]
@@ -155,12 +157,12 @@ fn days_to_ymd(days_since_epoch: i64) -> (i32, u32, u32) {
     (y as i32 + if m <= 2 { 1 } else { 0 }, m as u32, d as u32)
 }
 
-/// Async ana döngü: her tick'te sysfs'i oku, klavye olaylarını dinle.
+/// Async main loop: read sysfs on each tick and listen for keyboard events.
 fn run(terminal: &mut DefaultTerminal, battery: Battery, store: Option<Store>) -> Result<()> {
     install_panic_hook();
 
     let mut app = App::new(&battery, store);
-    app.refresh(&battery); // ilk örnekleme hemen
+    app.refresh(&battery); // first sample immediately
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()

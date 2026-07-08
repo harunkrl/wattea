@@ -1,24 +1,24 @@
-//! Sistem metrikleri: CPU yükü, ekran parlaklığı, sıcaklık.
+//! System metrics: CPU load, screen brightness, temperature.
 //!
-//! Batarya tüketimini *neden* açıklamak için sysfs + /proc/cpu üzerinden
-//! korelasyon verisi toplar. CPU yükü delta tabanlıdır (iki okuma arası
-//! fark) — bu yüzden `SystemReader` state tutar ve daemon çağrı çağrı kullanır.
+//! To help explain *why* battery is being consumed, this collects correlation
+//! data via sysfs + /proc/cpu. CPU load is delta-based (the difference between
+//! two reads), so `SystemReader` keeps state and the daemon uses it across calls.
 
 use std::path::{Path, PathBuf};
 
-/// Bir örneklemede toplanan sistem metrikleri (hepsi opsiyonel).
+/// System metrics collected in a single sample (all optional).
 #[derive(Debug, Clone, Default)]
 pub struct SystemMetrics {
-    /// CPU yükü % (0–100). İlk çağrıda baseline kurulur → None.
+    /// CPU load % (0–100). On the first call a baseline is established → None.
     pub cpu_load: Option<f64>,
-    /// Ekran parlaklığı % (0–100).
+    /// Screen brightness % (0–100).
     pub brightness: Option<f64>,
-    /// Sıcaklık °C (CPU/termal bölge).
+    /// Temperature °C (CPU/thermal zone).
     pub temperature: Option<f64>,
 }
 
-/// State'li sistem okuyucu. CPU delta hesabı için bir önceki /proc/stat
-/// örneğini hatırlar.
+/// Stateful system reader. Remembers the previous /proc/stat sample for the
+/// CPU delta calculation.
 pub struct SystemReader {
     prev_cpu: Option<(u64, u64)>, // (busy, total)
     backlight: Option<PathBuf>,
@@ -46,7 +46,7 @@ impl SystemReader {
         }
     }
 
-    /// Tüm sistem metriklerini bir kez oku. CPU yükü için state güncellenir.
+    /// Read all system metrics once. State is updated for the CPU load.
     pub fn read(&mut self) -> SystemMetrics {
         SystemMetrics {
             cpu_load: self.read_cpu_load(),
@@ -55,7 +55,7 @@ impl SystemReader {
         }
     }
 
-    /// /proc/stat üzerinden CPU yükü. Delta yoksa (ilk çağrı) None döner.
+    /// CPU load from /proc/stat. Returns None when there is no delta (first call).
     fn read_cpu_load(&mut self) -> Option<f64> {
         let cur = parse_proc_stat()?;
         let load = match self.prev_cpu {
@@ -75,13 +75,13 @@ impl SystemReader {
     }
 }
 
-/// /proc/stat ilk satırını oku → (busy, total) jiffy sayıları.
+/// Read the first line of /proc/stat → (busy, total) jiffy counts.
 fn parse_proc_stat() -> Option<(u64, u64)> {
     let line = std::fs::read_to_string("/proc/stat").ok()?;
     let first = line.lines().next()?;
     let fields: Vec<u64> = first
         .split_whitespace()
-        .skip(1) // "cpu" etiketi
+        .skip(1) // "cpu" label
         .filter_map(|f| f.parse().ok())
         .collect();
     // user nice system idle iowait irq softirq steal guest guest_nice
@@ -98,7 +98,7 @@ fn parse_proc_stat() -> Option<(u64, u64)> {
     Some((busy, total))
 }
 
-/// `/sys/class/backlight/` altında ilk kontrol cihazını bul.
+/// Find the first backlight controller under `/sys/class/backlight/`.
 fn find_backlight() -> Option<PathBuf> {
     let base = Path::new("/sys/class/backlight");
     if let Some(e) = std::fs::read_dir(base).ok()?.flatten().next() {
@@ -114,7 +114,7 @@ fn read_brightness(dir: &Option<PathBuf>) -> Option<f64> {
     Some(cur as f64 / max as f64 * 100.0)
 }
 
-/// `/sys/class/thermal/` altında ilk geçerli termal bölgeyi bul.
+/// Find the first valid thermal zone under `/sys/class/thermal/`.
 fn find_thermal_zone() -> Option<PathBuf> {
     let base = Path::new("/sys/class/thermal");
     for entry in std::fs::read_dir(base).ok()? {
@@ -144,10 +144,10 @@ mod tests {
 
     #[test]
     fn parse_proc_stat_handles_realistic_line() {
-        // Gerçek /proc/stat benzeri satır.
+        // A realistic /proc/stat-like line.
         let _ = std::fs::write("/tmp/wattea_fake_stat", "cpu  100 0 50 900 0 5 0 0 0 0\n");
-        // parse_proc_stat gerçek /proc/stat okur; test edilmez ama
-        // imza/anlam değişmediğini smoke olarak burada bırakıyoruz.
+        // parse_proc_stat reads the real /proc/stat; not exercised here, but we
+        // keep this as a smoke test that the signature/meaning is unchanged.
         assert_eq!(2 + 2, 4);
     }
 
@@ -159,10 +159,10 @@ mod tests {
             backlight: None,
             thermal: None,
         };
-        // prev None → ilk read_cpu_load None dönmeli (baseline kurulur).
-        // (parse_proc_stat /proc/stat varsa Some; delta hesabı None.)
+        // prev None → the first read_cpu_load returns None (baseline established).
+        // (parse_proc_stat returns Some if /proc/stat is present; the delta is None.)
         r.read_cpu_load(); // baseline
-        // ikinci çağrı bir delta verir (eğer /proc/stat okunabilirse).
+                           // The second call yields a delta (if /proc/stat is readable).
         std::thread::sleep(Duration::from_millis(10));
         let _ = r.read_cpu_load();
     }

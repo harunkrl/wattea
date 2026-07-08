@@ -1,35 +1,35 @@
 [Unit]
 Description=Wattea battery consumption collector
 Documentation=https://github.com/harunkrl/wattea
-# Pil takılı olsun olmasın çalış; ama UPower hazır olunca başlatmak
-# (ilk örneklemenin tutarlı olması için) tercih edilir.
+# Run whether or not a battery is plugged in; however, starting once UPower is
+# ready is preferred (so the first sample is consistent).
 After=upower.service
 
 [Service]
 Type=simple
-# Binary yolu: cargo install ile ~/.cargo/bin'e kurulursa oradan çalışır.
-# Dilerseniz ExecStart'ı mutlak yola (/usr/local/bin/wattea-daemon) değiştirin.
+# Binary path: if installed via cargo install it lives in ~/.cargo/bin.
+# You may change ExecStart to an absolute path (e.g. /usr/local/bin/wattea-daemon).
 ExecStart=%h/.cargo/bin/wattea-daemon
 
-# Örnekleme aralığı (saniye) — ortam değişkeniyle ayarlanabilir.
+# Sampling interval (seconds) — configurable via environment variable.
 Environment=WATTEA_INTERVAL=60
 
-# Yeniden başlatma: beklenmedik çöküşlerde otomatik toparla.
+# Restart: automatically recover from unexpected crashes.
 Restart=on-failure
 RestartSec=5
 
-# Güvenlik sertleştirme: batarya okumak için root GEREKMEZ; sadece
-# sysfs okur + kullanıcı veri dizinine yazar. Hepsi kullanıcının yetkisinde.
+# Security hardening: reading the battery does NOT require root; it only reads
+# sysfs and writes to the user's data directory. All within the user's privileges.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=tmp
 
-# Çıktı journal'a gider: `journalctl --user -u wattea-daemon -f`
+# Output goes to the journal: `journalctl --user -u wattea-daemon -f`
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=wattea-daemon
 
 [Install]
-# Kullanıcı oturumunda başlat; enable-linger ile oturum kapalıyken de çalışır.
+# Start in the user session; with enable-linger it also runs when the session is closed.
 WantedBy=default.target

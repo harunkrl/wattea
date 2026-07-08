@@ -1,7 +1,7 @@
-//! Processes sekmesi: process başına **tahmini** güç tüketimi (canlı).
+//! Processes tab: per-process **estimated** power consumption (live).
 //!
-//! Tahmin (attribution) — kesin watt değildir: CPU zamanı payı × RAPL toplam
-//! CPU gücü. RAPL okunamazsa yalnız CPU% gösterilir.
+//! This is an estimate (attribution) — not an exact watt value: CPU-time share
+//! × RAPL total CPU power. When RAPL cannot be read, only CPU% is shown.
 
 use ratatui::{
     layout::{Constraint, Layout, Rect},
@@ -14,7 +14,7 @@ use ratatui::{
 use crate::app::App;
 use crate::ui::theme::Theme;
 
-/// Processes sekmesini çizer.
+/// Render the Processes tab.
 pub fn render(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
     let [summary_area, tbl_area] =
         Layout::vertical([Constraint::Length(3), Constraint::Fill(1)]).areas(area);
@@ -38,7 +38,7 @@ fn render_summary_live(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) 
     let rapl_note = if app.processes.iter().any(|p| p.est_w > 0.0) {
         "RAPL: ok"
     } else {
-        "RAPL: yok (yalnız CPU%)"
+        "RAPL: unavailable (CPU% only)"
     };
 
     let line = Line::from(vec![
@@ -80,7 +80,7 @@ fn render_table_live(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
     .style(Style::default().fg(theme.accent).bold());
 
     let rows = app.processes.iter().map(|p| {
-        // est_w'a göre renk: yüksekse vurgu.
+        // Color by est_w: emphasize the high ones.
         let w_color = if p.est_w >= 1.0 {
             theme.accent_alt
         } else if p.est_w >= 0.3 {
@@ -194,7 +194,7 @@ fn render_table_history(app: &App, frame: &mut Frame, area: Rect, theme: &Theme)
     frame.render_stateful_widget(table, area, &mut TableState::default());
 }
 
-/// Uzun process adlarını kırp (process adı genelde comm, 15 char; ama yedek).
+/// Truncate long process names (the name is usually comm, 15 chars; kept as a fallback).
 fn truncate_name(name: &str, max: usize) -> String {
     if name.chars().count() <= max {
         name.to_string()

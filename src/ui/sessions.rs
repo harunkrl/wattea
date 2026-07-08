@@ -1,5 +1,5 @@
-//! Sessions sekmesi: on-battery oturum tablosu. Üst özet kartı + severity
-//! renklendirmesi (yüksek tüketim accent_alt) + footer toplamları.
+//! Sessions tab: on-battery session table. Top summary card + severity
+//! coloring (high consumption in accent_alt) + footer totals.
 
 use ratatui::{
     layout::{Constraint, Layout, Rect},
@@ -12,7 +12,7 @@ use ratatui::{
 use crate::app::App;
 use crate::ui::theme::{Theme, SEVERE_DRAIN_PCT_H};
 
-/// Sessions sekmesini çizer.
+/// Render the Sessions tab.
 pub fn render(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
     let block = theme.panel(
         &format!("Sessions · on-battery  ·  {} total", app.sessions.len()),
@@ -124,7 +124,7 @@ fn render_table(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
         })
         .collect();
 
-    // Footer toplamları.
+    // Footer totals.
     let total_dur: i64 = app.sessions.iter().map(|s| s.duration_secs()).sum();
     let total_drop: i16 = app.sessions.iter().map(|s| s.capacity_drop().max(0)).sum();
     let total_hours = total_dur as f64 / 3600.0;
@@ -167,25 +167,25 @@ fn render_table(app: &App, frame: &mut Frame, area: Rect, theme: &Theme) {
     frame.render_stateful_widget(table, area, &mut TableState::default());
 }
 
-// --- sessions-only yardımcılar -----------------------------------------------
+// --- sessions-only helpers ----------------------------------------------------
 
-/// Oturum başlangıç zamanını "Mon DD HH:MM" biçiminde göster (UTC kabaca).
+/// Format the session start time as "Mon DD HH:MM" (roughly UTC).
 fn fmt_session_when(ts: i64) -> String {
     let days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
     let secs = ts.rem_euclid(86400);
     let day_secs = 86400;
-    let epoch_weekday = 4; // 1970-01-01 Perşembe
+    let epoch_weekday = 4; // 1970-01-01 was a Thursday
     let weekday = ((ts.div_euclid(day_secs) + epoch_weekday) as usize) % 7;
     let hour = (secs / 3600) as u8;
     let minute = ((secs % 3600) / 60) as u8;
-    let day_of_month = 1 + (ts.div_euclid(day_secs) as usize % 28); // yaklaşık
+    let day_of_month = 1 + (ts.div_euclid(day_secs) as usize % 28); // approximate
     format!(
         "{} {:>2} {:02}:{:02}",
         days[weekday], day_of_month, hour, minute
     )
 }
 
-/// Saniyeyi "1h 23m" / "45m" / "30s" biçimine çevir.
+/// Format seconds as "1h 23m" / "45m" / "30s".
 fn fmt_duration(secs: i64) -> String {
     let secs = secs.max(0);
     let h = secs / 3600;
